@@ -63,5 +63,6 @@ def calcular_ganancia(operaciones):
     return ganancia
 
 
-resultado = calcular_ganancia(operaciones)
-print(f"\nGanancia: {resultado:.2f} EUR")
+if __name__ == "__main__":
+    resultado = calcular_ganancia(operaciones)
+    print(f"\nGanancia: {resultado:.2f} EUR")
