@@ -52,6 +52,16 @@ CASOS = [
         ],
         "esperado": "-181.20",
     },
+    {
+        "nombre": "regla_dos_meses_varias_recompras",
+        "operaciones": [
+            {"fecha": "10/01", "tipo": "compra", "acciones": 10, "precio_usd": 100, "comision_eur": 1, "cambio": 1.00},
+            {"fecha": "15/03", "tipo": "venta",  "acciones": 10, "precio_usd": 70,  "comision_eur": 1, "cambio": 1.00},
+            {"fecha": "05/04", "tipo": "compra", "acciones": 4,  "precio_usd": 75,  "comision_eur": 1, "cambio": 1.00},
+            {"fecha": "20/04", "tipo": "compra", "acciones": 3,  "precio_usd": 80,  "comision_eur": 1, "cambio": 1.00},
+        ],
+        "esperado": "-90.60",
+    },
     # Añade aqui nuevos casos:
     # {
     #     "nombre": "nombre_descriptivo_del_caso",
@@ -112,6 +122,27 @@ class TestReglaDosMeses(unittest.TestCase):
         lote = lotes_finales[0]
         self.assertEqual(lote["fecha"], "05/04")
         self.assertAlmostEqual(lote["coste_accion"] * lote["acciones"], 421.80, places=2)
+
+    def test_varias_recompras_reparten_el_bloqueo_por_acciones(self):
+        operaciones = [
+            {"fecha": "10/01", "tipo": "compra", "acciones": 10, "precio_usd": 100, "comision_eur": 1, "cambio": 1.00},
+            {"fecha": "15/03", "tipo": "venta",  "acciones": 10, "precio_usd": 70,  "comision_eur": 1, "cambio": 1.00},
+            {"fecha": "05/04", "tipo": "compra", "acciones": 4,  "precio_usd": 75,  "comision_eur": 1, "cambio": 1.00},
+            {"fecha": "20/04", "tipo": "compra", "acciones": 3,  "precio_usd": 80,  "comision_eur": 1, "cambio": 1.00},
+        ]
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            ganancia, lotes_finales = calcular_detalle(operaciones)
+
+        self.assertEqual(f"{ganancia:.2f}", "-90.60")
+        self.assertEqual(len(lotes_finales), 2)
+
+        lote_05_04, lote_20_04 = lotes_finales
+        self.assertEqual(lote_05_04["fecha"], "05/04")
+        self.assertAlmostEqual(lote_05_04["coste_accion"] * lote_05_04["acciones"], 421.80, places=2)
+
+        self.assertEqual(lote_20_04["fecha"], "20/04")
+        self.assertAlmostEqual(lote_20_04["coste_accion"] * lote_20_04["acciones"], 331.60, places=2)
 
 
 if __name__ == "__main__":

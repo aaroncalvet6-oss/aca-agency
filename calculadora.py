@@ -42,25 +42,22 @@ def _sumar_meses(fecha, meses):
     return date(anio, mes, dia)
 
 
-def _buscar_recompra_en_ventana(operaciones, venta):
-    """Primera compra del mismo valor en los 2 meses antes/despues de la venta.
+def _buscar_recompras_en_ventana(operaciones, venta):
+    """Indices de TODAS las compras del mismo valor en los 2 meses antes/despues de la venta.
 
-    Simplificacion asumida (valida para los casos de prueba actuales): solo
-    busca UNA compra (la primera que encuentra en la ventana) y no distingue
-    si es la misma que se esta liquidando en esta venta. Si hay varias
-    compras en la ventana, no se combinan entre ellas. Anadir un caso de
-    prueba que ejercite eso antes de confiar en el resultado para esos
-    escenarios.
+    Simplificacion asumida (valida para los casos de prueba actuales): no
+    distingue si alguna de esas compras es la misma que se esta liquidando
+    en esta venta. Anadir un caso de prueba que ejercite eso antes de
+    confiar en el resultado para ese escenario.
     """
     fecha_venta = _a_fecha(venta["fecha"])
     inicio = _sumar_meses(fecha_venta, -MESES_REGLA_DOS_MESES)
     fin = _sumar_meses(fecha_venta, MESES_REGLA_DOS_MESES)
 
-    for idx, op in enumerate(operaciones):
-        if op["tipo"] == "compra" and inicio <= _a_fecha(op["fecha"]) <= fin:
-            return idx
-
-    return None
+    return [
+        idx for idx, op in enumerate(operaciones)
+        if op["tipo"] == "compra" and inicio <= _a_fecha(op["fecha"]) <= fin
+    ]
 
 
 def _fifo_consumir(lotes, cantidad, fecha_venta, imprimir_traza):
@@ -132,11 +129,12 @@ def calcular_detalle(operaciones):
     _, resultados_venta, _ = _simular(operaciones, perdida_bloqueada_por_venta={}, coste_extra_por_compra={},
                                        imprimir_traza=False)
 
-    # Para cada perdida, si hay una compra del mismo valor en la ventana de
-    # los 2 meses (antes o despues), se bloquea la parte de la perdida
-    # proporcional a las acciones recompradas (el resto se declara con
-    # normalidad) y ese importe se suma al coste del lote recomprado.
-    # Nunca se aplica a ganancias.
+    # Para cada perdida, se suman las acciones de TODAS las compras del
+    # mismo valor en la ventana de los 2 meses (antes o despues). Se
+    # bloquea la parte de la perdida proporcional a esas acciones
+    # recompradas en conjunto (el resto se declara con normalidad), y ese
+    # importe se reparte entre los lotes recomprados en proporcion a sus
+    # propias acciones. Nunca se aplica a ganancias.
     perdida_bloqueada_por_venta = {}
     coste_extra_por_compra = defaultdict(float)
 
@@ -144,17 +142,20 @@ def calcular_detalle(operaciones):
         if resultado >= 0:
             continue
 
-        idx_recompra = _buscar_recompra_en_ventana(operaciones, operaciones[idx])
-        if idx_recompra is None:
+        idxs_recompra = _buscar_recompras_en_ventana(operaciones, operaciones[idx])
+        if not idxs_recompra:
             continue
 
         acciones_vendidas = operaciones[idx]["acciones"]
-        acciones_recompradas = operaciones[idx_recompra]["acciones"]
+        acciones_recompradas = sum(operaciones[i]["acciones"] for i in idxs_recompra)
         proporcion = min(acciones_recompradas, acciones_vendidas) / acciones_vendidas
 
         bloqueado = -resultado * proporcion
         perdida_bloqueada_por_venta[idx] = bloqueado
-        coste_extra_por_compra[idx_recompra] += bloqueado
+
+        for i in idxs_recompra:
+            parte = bloqueado * (operaciones[i]["acciones"] / acciones_recompradas)
+            coste_extra_por_compra[i] += parte
 
     # Pasada 2: FIFO definitivo, ya con la parte bloqueada de cada perdida
     # neutralizada y sumada al coste del lote recomprado correspondiente.
