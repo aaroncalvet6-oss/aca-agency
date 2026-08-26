@@ -45,11 +45,12 @@ def _sumar_meses(fecha, meses):
 def _buscar_recompra_en_ventana(operaciones, venta):
     """Primera compra del mismo valor en los 2 meses antes/despues de la venta.
 
-    Simplificacion asumida (valida para los casos de prueba actuales): no
-    distingue si la compra es la misma que se esta liquidando en esta venta,
-    ni reparte la perdida de forma proporcional cuando hay menos acciones
-    recompradas que vendidas. Anadir un caso de prueba que ejercite eso
-    antes de confiar en el resultado para esos escenarios.
+    Simplificacion asumida (valida para los casos de prueba actuales): solo
+    busca UNA compra (la primera que encuentra en la ventana) y no distingue
+    si es la misma que se esta liquidando en esta venta. Si hay varias
+    compras en la ventana, no se combinan entre ellas. Anadir un caso de
+    prueba que ejercite eso antes de confiar en el resultado para esos
+    escenarios.
     """
     fecha_venta = _a_fecha(venta["fecha"])
     inicio = _sumar_meses(fecha_venta, -MESES_REGLA_DOS_MESES)
@@ -87,7 +88,7 @@ def _fifo_consumir(lotes, cantidad, fecha_venta, imprimir_traza):
     return coste
 
 
-def _simular(operaciones, indices_bloqueados, coste_extra_por_compra, imprimir_traza):
+def _simular(operaciones, perdida_bloqueada_por_venta, coste_extra_por_compra, imprimir_traza):
     lotes = []       # cada lote: acciones que LE QUEDAN y lo que costo cada accion
     ganancia = 0
     resultados_venta = {}   # indice de la operacion -> resultado (ganancia o perdida) de esa venta
@@ -109,12 +110,14 @@ def _simular(operaciones, indices_bloqueados, coste_extra_por_compra, imprimir_t
             resultado_venta = total_eur - coste_vendido
             resultados_venta[idx] = resultado_venta
 
-            if idx in indices_bloqueados:
-                if imprimir_traza:
-                    print(f"  venta {op['fecha']}: perdida de {-resultado_venta:.2f} no declarada "
-                          f"(regla de los 2 meses, art. 33.5.f LIRPF)")
-            else:
-                ganancia += resultado_venta
+            bloqueado = perdida_bloqueada_por_venta.get(idx, 0)
+            resultado_declarado = resultado_venta + bloqueado
+            ganancia += resultado_declarado
+
+            if bloqueado and imprimir_traza:
+                print(f"  venta {op['fecha']}: {bloqueado:.2f} de la perdida no se declara "
+                      f"(regla de los 2 meses, art. 33.5.f LIRPF); queda una perdida declarable "
+                      f"de {resultado_declarado:.2f}")
 
     return ganancia, resultados_venta, lotes
 
@@ -126,13 +129,15 @@ def calcular_detalle(operaciones):
     lote recomprado, ademas de la ganancia declarable."""
     # Pasada 1: FIFO normal, sin aplicar todavia la regla de los 2 meses,
     # solo para saber que ventas dan perdida y de cuanto.
-    _, resultados_venta, _ = _simular(operaciones, indices_bloqueados=set(), coste_extra_por_compra={},
+    _, resultados_venta, _ = _simular(operaciones, perdida_bloqueada_por_venta={}, coste_extra_por_compra={},
                                        imprimir_traza=False)
 
     # Para cada perdida, si hay una compra del mismo valor en la ventana de
-    # los 2 meses (antes o despues), esa perdida no se declara y se suma al
-    # coste del lote recomprado (nunca se aplica a ganancias).
-    indices_bloqueados = set()
+    # los 2 meses (antes o despues), se bloquea la parte de la perdida
+    # proporcional a las acciones recompradas (el resto se declara con
+    # normalidad) y ese importe se suma al coste del lote recomprado.
+    # Nunca se aplica a ganancias.
+    perdida_bloqueada_por_venta = {}
     coste_extra_por_compra = defaultdict(float)
 
     for idx, resultado in resultados_venta.items():
@@ -140,13 +145,20 @@ def calcular_detalle(operaciones):
             continue
 
         idx_recompra = _buscar_recompra_en_ventana(operaciones, operaciones[idx])
-        if idx_recompra is not None:
-            indices_bloqueados.add(idx)
-            coste_extra_por_compra[idx_recompra] += -resultado
+        if idx_recompra is None:
+            continue
 
-    # Pasada 2: FIFO definitivo, ya con las perdidas bloqueadas neutralizadas
-    # y su importe sumado al coste del lote recomprado correspondiente.
-    ganancia, _, lotes_finales = _simular(operaciones, indices_bloqueados, coste_extra_por_compra,
+        acciones_vendidas = operaciones[idx]["acciones"]
+        acciones_recompradas = operaciones[idx_recompra]["acciones"]
+        proporcion = min(acciones_recompradas, acciones_vendidas) / acciones_vendidas
+
+        bloqueado = -resultado * proporcion
+        perdida_bloqueada_por_venta[idx] = bloqueado
+        coste_extra_por_compra[idx_recompra] += bloqueado
+
+    # Pasada 2: FIFO definitivo, ya con la parte bloqueada de cada perdida
+    # neutralizada y sumada al coste del lote recomprado correspondiente.
+    ganancia, _, lotes_finales = _simular(operaciones, perdida_bloqueada_por_venta, coste_extra_por_compra,
                                            imprimir_traza=True)
 
     return ganancia, lotes_finales
