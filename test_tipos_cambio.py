@@ -29,6 +29,23 @@ XML_FIXTURE = """<?xml version="1.0" encoding="UTF-8"?>
       <Cube currency="USD" rate="1.0940"/>
       <Cube currency="GBP" rate="0.8570"/>
     </Cube>
+    <!-- Datos reales del BCE (eurofxref-hist-90d.xml). 22 y 23/08/2026 no
+         existen a proposito: son sabado y domingo. -->
+    <Cube time="2026-08-25">
+      <Cube currency="USD" rate="1.1662"/>
+    </Cube>
+    <Cube time="2026-08-24">
+      <Cube currency="USD" rate="1.1664"/>
+    </Cube>
+    <Cube time="2026-08-21">
+      <Cube currency="USD" rate="1.1699"/>
+    </Cube>
+    <Cube time="2026-08-20">
+      <Cube currency="USD" rate="1.1681"/>
+    </Cube>
+    <Cube time="2026-08-19">
+      <Cube currency="USD" rate="1.1605"/>
+    </Cube>
   </Cube>
 </gesmes:Envelope>
 """
@@ -58,6 +75,21 @@ class TestTiposCambio(unittest.TestCase):
     def test_fecha_de_1990_lanza_error(self):
         with self.assertRaises(ValueError):
             self._obtener(date(1990, 1, 1))
+
+    def test_viernes_21_agosto_2026_devuelve_el_tipo_de_ese_dia(self):
+        self.assertEqual(self._obtener(date(2026, 8, 21)), 1.1699)
+
+    def test_sabado_22_agosto_2026_cae_al_viernes_anterior(self):
+        self.assertEqual(self._obtener(date(2026, 8, 22)), 1.1699)
+
+    def test_domingo_23_agosto_2026_cae_al_viernes_anterior(self):
+        self.assertEqual(self._obtener(date(2026, 8, 23)), 1.1699)
+
+    def test_lunes_24_agosto_2026_devuelve_el_tipo_de_ese_dia(self):
+        self.assertEqual(self._obtener(date(2026, 8, 24)), 1.1664)
+
+    def test_martes_25_agosto_2026_devuelve_el_tipo_de_ese_dia(self):
+        self.assertEqual(self._obtener(date(2026, 8, 25)), 1.1662)
 
 
 if __name__ == "__main__":
