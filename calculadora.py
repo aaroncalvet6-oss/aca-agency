@@ -5,6 +5,8 @@ import calendar
 from collections import defaultdict
 from datetime import date
 
+import tipos_cambio
+
 MESES_REGLA_DOS_MESES = 2
 ANIO_BASE = 2001  # las fechas son "DD/MM" sin anio; usamos uno cualquiera no bisiesto
 
@@ -16,12 +18,34 @@ operaciones = [
 ]
 
 
+def _fecha_completa(fecha_str):
+    """Convierte "DD/MM/AAAA" en un date real (con anio). Hace falta el
+    anio para poder consultar el BCE; con solo "DD/MM" no hay forma de
+    saber a que fecha real se refiere la operacion."""
+    partes = fecha_str.split("/")
+    if len(partes) != 3:
+        raise ValueError(
+            f"La operacion del {fecha_str} no trae 'cambio' y su fecha no incluye el anio "
+            f"(usa \"DD/MM/AAAA\") para poder consultar el tipo del BCE"
+        )
+    dia, mes, anio = (int(parte) for parte in partes)
+    return date(anio, mes, dia)
+
+
 def a_euros(op):
-    """Pasa una operacion a euros con SU tipo de cambio y le aplica la comision."""
+    """Pasa una operacion a euros con SU tipo de cambio y le aplica la comision.
+
+    Si la operacion no trae "cambio", se busca el tipo oficial del BCE para
+    su fecha y divisa (op["divisa"], por defecto "USD").
+    """
     importe_usd = op["acciones"] * op["precio_usd"]
 
+    cambio = op.get("cambio")
+    if cambio is None:
+        cambio = tipos_cambio.obtener_tipo_cambio(_fecha_completa(op["fecha"]), op.get("divisa", "USD"))
+
     # Redondeamos a centimos porque esto es dinero real que se movio de verdad.
-    importe_eur = round(importe_usd / op["cambio"], 2)
+    importe_eur = round(importe_usd / cambio, 2)
 
     if op["tipo"] == "compra":
         return importe_eur + op["comision_eur"]   # comprar te cuesta mas
@@ -30,7 +54,9 @@ def a_euros(op):
 
 
 def _a_fecha(fecha_str):
-    dia, mes = (int(parte) for parte in fecha_str.split("/"))
+    # Aceptamos tanto "DD/MM" como "DD/MM/AAAA": aqui el anio no importa,
+    # solo se usa para medir distancia en meses dentro del mismo calendario.
+    dia, mes = (int(parte) for parte in fecha_str.split("/")[:2])
     return date(ANIO_BASE, mes, dia)
 
 

@@ -11,8 +11,10 @@ Ejecutar todos los casos:
 import contextlib
 import io
 import unittest
+from datetime import date
+from unittest.mock import patch
 
-from calculadora import calcular_detalle, calcular_ganancia
+from calculadora import a_euros, calcular_detalle, calcular_ganancia
 
 CASOS = [
     {
@@ -143,6 +145,32 @@ class TestReglaDosMeses(unittest.TestCase):
 
         self.assertEqual(lote_20_04["fecha"], "20/04")
         self.assertAlmostEqual(lote_20_04["coste_accion"] * lote_20_04["acciones"], 331.60, places=2)
+
+
+class TestCambioManualOBCE(unittest.TestCase):
+    def test_usa_el_cambio_manual_si_se_da_sin_consultar_el_bce(self):
+        op = {"fecha": "15/01", "tipo": "compra", "acciones": 10, "precio_usd": 300, "comision_eur": 1, "cambio": 1.09}
+
+        with patch("calculadora.tipos_cambio.obtener_tipo_cambio") as mock_bce:
+            total = a_euros(op)
+
+        mock_bce.assert_not_called()
+        self.assertAlmostEqual(total, round(3000 / 1.09, 2) + 1)
+
+    def test_busca_en_el_bce_si_falta_el_cambio(self):
+        op = {"fecha": "15/01/2024", "tipo": "compra", "acciones": 10, "precio_usd": 300, "comision_eur": 1}
+
+        with patch("calculadora.tipos_cambio.obtener_tipo_cambio", return_value=1.09) as mock_bce:
+            total = a_euros(op)
+
+        mock_bce.assert_called_once_with(date(2024, 1, 15), "USD")
+        self.assertAlmostEqual(total, round(3000 / 1.09, 2) + 1)
+
+    def test_sin_cambio_y_sin_anio_en_la_fecha_da_error_claro(self):
+        op = {"fecha": "15/01", "tipo": "compra", "acciones": 10, "precio_usd": 300, "comision_eur": 1}
+
+        with self.assertRaises(ValueError):
+            a_euros(op)
 
 
 if __name__ == "__main__":
