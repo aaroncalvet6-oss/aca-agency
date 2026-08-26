@@ -12,7 +12,7 @@ import contextlib
 import io
 import unittest
 
-from calculadora import calcular_ganancia
+from calculadora import calcular_detalle, calcular_ganancia
 
 CASOS = [
     {
@@ -33,6 +33,15 @@ CASOS = [
             {"fecha": "20/12", "tipo": "venta",  "acciones": 3,  "precio_usd": 500, "comision_eur": 1, "cambio": 1.05},
         ],
         "esperado": "1415.55",
+    },
+    {
+        "nombre": "regla_dos_meses_perdida_bloqueada",
+        "operaciones": [
+            {"fecha": "10/01", "tipo": "compra", "acciones": 10, "precio_usd": 100, "comision_eur": 1, "cambio": 1.00},
+            {"fecha": "15/03", "tipo": "venta",  "acciones": 10, "precio_usd": 70,  "comision_eur": 1, "cambio": 1.00},
+            {"fecha": "05/04", "tipo": "compra", "acciones": 10, "precio_usd": 75,  "comision_eur": 1, "cambio": 1.00},
+        ],
+        "esperado": "0.00",
     },
     # Añade aqui nuevos casos:
     # {
@@ -58,6 +67,25 @@ class TestCalculadoraFIFO(unittest.TestCase):
 
 for _caso in CASOS:
     setattr(TestCalculadoraFIFO, f"test_{_caso['nombre']}", _crear_test(_caso))
+
+
+class TestReglaDosMeses(unittest.TestCase):
+    def test_lote_recomprado_incorpora_la_perdida_bloqueada(self):
+        operaciones = [
+            {"fecha": "10/01", "tipo": "compra", "acciones": 10, "precio_usd": 100, "comision_eur": 1, "cambio": 1.00},
+            {"fecha": "15/03", "tipo": "venta",  "acciones": 10, "precio_usd": 70,  "comision_eur": 1, "cambio": 1.00},
+            {"fecha": "05/04", "tipo": "compra", "acciones": 10, "precio_usd": 75,  "comision_eur": 1, "cambio": 1.00},
+        ]
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            ganancia, lotes_finales = calcular_detalle(operaciones)
+
+        self.assertEqual(f"{ganancia:.2f}", "0.00")
+        self.assertEqual(len(lotes_finales), 1)
+
+        lote = lotes_finales[0]
+        self.assertEqual(lote["fecha"], "05/04")
+        self.assertAlmostEqual(lote["coste_accion"] * lote["acciones"], 1053.00, places=2)
 
 
 if __name__ == "__main__":
