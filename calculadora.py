@@ -4,11 +4,24 @@
 import calendar
 from collections import defaultdict
 from datetime import date
+from decimal import ROUND_HALF_UP, Decimal
 
 import tipos_cambio
 
 MESES_REGLA_DOS_MESES = 2
 ANIO_BASE = 2001  # las fechas son "DD/MM" sin anio; usamos uno cualquiera no bisiesto
+CENTIMO = Decimal("0.01")
+
+
+def _decimal(valor):
+    """Convierte a Decimal de forma segura. Nunca Decimal(float) directo:
+    eso arrastraria el error binario del float (Decimal(0.1) no es 0.1).
+    Pasando por str se evita, porque str(float) da la representacion
+    decimal mas corta que redondea al mismo float."""
+    if isinstance(valor, Decimal):
+        return valor
+    return Decimal(str(valor))
+
 
 operaciones = [
     {"fecha": "15/01", "tipo": "compra", "acciones": 10, "precio_usd": 300, "comision_eur": 1, "cambio": 1.09},
@@ -35,22 +48,36 @@ def _fecha_completa(fecha_str):
 def a_euros(op):
     """Pasa una operacion a euros con SU tipo de cambio y le aplica la comision.
 
-    Si la operacion no trae "cambio", se busca el tipo oficial del BCE para
-    su fecha y divisa (op["divisa"], por defecto "USD").
-    """
-    importe_usd = op["acciones"] * op["precio_usd"]
+    Si la operacion ya esta en EUR (op["divisa"] == "EUR"), NO se convierte:
+    se usa el importe tal cual, sin pasar por el BCE. Es el caso mas
+    comun en Trade Republic (ETFs/acciones que cotizan en EUR), no una
+    excepcion.
 
-    cambio = op.get("cambio")
-    if cambio is None:
-        cambio = tipos_cambio.obtener_tipo_cambio(_fecha_completa(op["fecha"]), op.get("divisa", "USD"))
+    Si no esta en EUR y no trae "cambio", se busca el tipo oficial del BCE
+    para su fecha y divisa (op.get("divisa", "USD")).
+    """
+    acciones = _decimal(op["acciones"])
+    precio = _decimal(op["precio_usd"])
+    comision = _decimal(op["comision_eur"])
+    divisa = op.get("divisa", "USD")
+
+    importe = acciones * precio
+
+    if divisa == "EUR":
+        importe_eur = importe
+    else:
+        cambio = op.get("cambio")
+        if cambio is None:
+            cambio = tipos_cambio.obtener_tipo_cambio(_fecha_completa(op["fecha"]), divisa)
+        importe_eur = importe / _decimal(cambio)
 
     # Redondeamos a centimos porque esto es dinero real que se movio de verdad.
-    importe_eur = round(importe_usd / cambio, 2)
+    importe_eur = importe_eur.quantize(CENTIMO, rounding=ROUND_HALF_UP)
 
     if op["tipo"] == "compra":
-        return importe_eur + op["comision_eur"]   # comprar te cuesta mas
+        return importe_eur + comision   # comprar te cuesta mas
     else:
-        return importe_eur - op["comision_eur"]   # vender te deja menos
+        return importe_eur - comision   # vender te deja menos
 
 
 def _a_fecha(fecha_str):
@@ -87,8 +114,8 @@ def _buscar_recompras_en_ventana(operaciones, venta):
 
 
 def _fifo_consumir(lotes, cantidad, fecha_venta, imprimir_traza):
-    coste = 0
-    por_vender = cantidad
+    coste = Decimal("0")
+    por_vender = _decimal(cantidad)
 
     # FIFO: vamos comiendo los lotes mas antiguos primero
     while por_vender > 0:
@@ -113,19 +140,20 @@ def _fifo_consumir(lotes, cantidad, fecha_venta, imprimir_traza):
 
 def _simular(operaciones, perdida_bloqueada_por_venta, coste_extra_por_compra, imprimir_traza):
     lotes = []       # cada lote: acciones que LE QUEDAN y lo que costo cada accion
-    ganancia = 0
+    ganancia = Decimal("0")
     resultados_venta = {}   # indice de la operacion -> resultado (ganancia o perdida) de esa venta
 
     for idx, op in enumerate(operaciones):
         total_eur = a_euros(op)
 
         if op["tipo"] == "compra":
-            total_eur += coste_extra_por_compra.get(idx, 0)
+            total_eur += coste_extra_por_compra.get(idx, Decimal("0"))
+            acciones = _decimal(op["acciones"])
             lotes.append({
                 "fecha": op["fecha"],
-                "acciones": op["acciones"],
+                "acciones": acciones,
                 # el coste por accion NO se redondea: no es dinero, es un calculo intermedio
-                "coste_accion": total_eur / op["acciones"],
+                "coste_accion": total_eur / acciones,
             })
 
         else:
@@ -133,7 +161,7 @@ def _simular(operaciones, perdida_bloqueada_por_venta, coste_extra_por_compra, i
             resultado_venta = total_eur - coste_vendido
             resultados_venta[idx] = resultado_venta
 
-            bloqueado = perdida_bloqueada_por_venta.get(idx, 0)
+            bloqueado = perdida_bloqueada_por_venta.get(idx, Decimal("0"))
             resultado_declarado = resultado_venta + bloqueado
             ganancia += resultado_declarado
 
@@ -162,7 +190,7 @@ def calcular_detalle(operaciones):
     # importe se reparte entre los lotes recomprados en proporcion a sus
     # propias acciones. Nunca se aplica a ganancias.
     perdida_bloqueada_por_venta = {}
-    coste_extra_por_compra = defaultdict(float)
+    coste_extra_por_compra = defaultdict(lambda: Decimal("0"))
 
     for idx, resultado in resultados_venta.items():
         if resultado >= 0:
@@ -172,15 +200,15 @@ def calcular_detalle(operaciones):
         if not idxs_recompra:
             continue
 
-        acciones_vendidas = operaciones[idx]["acciones"]
-        acciones_recompradas = sum(operaciones[i]["acciones"] for i in idxs_recompra)
+        acciones_vendidas = _decimal(operaciones[idx]["acciones"])
+        acciones_recompradas = sum((_decimal(operaciones[i]["acciones"]) for i in idxs_recompra), Decimal("0"))
         proporcion = min(acciones_recompradas, acciones_vendidas) / acciones_vendidas
 
         bloqueado = -resultado * proporcion
         perdida_bloqueada_por_venta[idx] = bloqueado
 
         for i in idxs_recompra:
-            parte = bloqueado * (operaciones[i]["acciones"] / acciones_recompradas)
+            parte = bloqueado * (_decimal(operaciones[i]["acciones"]) / acciones_recompradas)
             coste_extra_por_compra[i] += parte
 
     # Pasada 2: FIFO definitivo, ya con la parte bloqueada de cada perdida
