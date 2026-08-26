@@ -12,10 +12,18 @@ import contextlib
 import io
 import unittest
 from datetime import date
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from unittest.mock import patch
 
 from calculadora import a_euros, calcular_detalle, calcular_ganancia
+
+CENTIMO = Decimal("0.01")
+
+
+def _como_dinero(valor):
+    """Redondea un Decimal a centimos, igual que se le mostraria al usuario."""
+    return valor.quantize(CENTIMO, rounding=ROUND_HALF_UP)
+
 
 CASOS = [
     {
@@ -116,7 +124,7 @@ class TestReglaDosMeses(unittest.TestCase):
 
         lote = lotes_finales[0]
         self.assertEqual(lote["fecha"], "05/04")
-        self.assertAlmostEqual(float(lote["coste_accion"] * lote["acciones"]), 1053.00, places=2)
+        self.assertEqual(_como_dinero(lote["coste_accion"] * lote["acciones"]), Decimal("1053.00"))
 
     def test_recompra_parcial_bloquea_solo_la_proporcion_recomprada(self):
         operaciones = [
@@ -133,7 +141,7 @@ class TestReglaDosMeses(unittest.TestCase):
 
         lote = lotes_finales[0]
         self.assertEqual(lote["fecha"], "05/04")
-        self.assertAlmostEqual(float(lote["coste_accion"] * lote["acciones"]), 421.80, places=2)
+        self.assertEqual(_como_dinero(lote["coste_accion"] * lote["acciones"]), Decimal("421.80"))
 
     def test_varias_recompras_reparten_el_bloqueo_por_acciones(self):
         operaciones = [
@@ -151,10 +159,10 @@ class TestReglaDosMeses(unittest.TestCase):
 
         lote_05_04, lote_20_04 = lotes_finales
         self.assertEqual(lote_05_04["fecha"], "05/04")
-        self.assertAlmostEqual(float(lote_05_04["coste_accion"] * lote_05_04["acciones"]), 421.80, places=2)
+        self.assertEqual(_como_dinero(lote_05_04["coste_accion"] * lote_05_04["acciones"]), Decimal("421.80"))
 
         self.assertEqual(lote_20_04["fecha"], "20/04")
-        self.assertAlmostEqual(float(lote_20_04["coste_accion"] * lote_20_04["acciones"]), 331.60, places=2)
+        self.assertEqual(_como_dinero(lote_20_04["coste_accion"] * lote_20_04["acciones"]), Decimal("331.60"))
 
 
 class TestCambioManualOBCE(unittest.TestCase):
@@ -165,7 +173,7 @@ class TestCambioManualOBCE(unittest.TestCase):
             total = a_euros(op)
 
         mock_bce.assert_not_called()
-        self.assertAlmostEqual(float(total), round(3000 / 1.09, 2) + 1)
+        self.assertEqual(total, Decimal("2753.29"))
 
     def test_busca_en_el_bce_si_falta_el_cambio(self):
         op = {"fecha": "15/01/2024", "tipo": "compra", "acciones": 10, "precio_usd": 300, "comision_eur": 1}
@@ -174,7 +182,7 @@ class TestCambioManualOBCE(unittest.TestCase):
             total = a_euros(op)
 
         mock_bce.assert_called_once_with(date(2024, 1, 15), "USD")
-        self.assertAlmostEqual(float(total), round(3000 / 1.09, 2) + 1)
+        self.assertEqual(total, Decimal("2753.29"))
 
     def test_sin_cambio_y_sin_anio_en_la_fecha_da_error_claro(self):
         op = {"fecha": "15/01", "tipo": "compra", "acciones": 10, "precio_usd": 300, "comision_eur": 1}
