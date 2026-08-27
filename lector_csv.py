@@ -16,9 +16,16 @@ Flujo tipico:
     for valor, operaciones in operaciones_por_valor.items():
         ganancia, lotes = calcular_detalle(operaciones)
     resumen = resumir_dividendos(dividendos_por_valor)   # rendimiento del capital mobiliario
+
+Todas las funciones que leen un CSV aceptan tanto una ruta de fichero
+(ruta_csv) como el texto ya en memoria (contenido). Esto ultimo es lo
+que usa la web: el fichero que arrastra el usuario se lee con el File
+API del navegador y se pasa su texto directamente, sin escribirlo a
+ningun disco (ni siquiera temporal).
 """
 
 import csv
+import io
 import json
 import os
 from collections import defaultdict
@@ -52,22 +59,32 @@ class ErrorLectorCSV(Exception):
     """Error claro sobre el propio fichero o el mapeo, no del calculo."""
 
 
-def _detectar_separador(ruta_csv, encoding):
+def _texto_completo(ruta_csv, contenido, encoding):
+    if contenido is not None:
+        return contenido
+    if ruta_csv is None:
+        raise ErrorLectorCSV("Hace falta 'ruta_csv' o 'contenido'")
     with open(ruta_csv, encoding=encoding) as f:
-        muestra = f.read(4096)
+        return f.read()
+
+
+def _detectar_separador(texto):
     try:
-        return csv.Sniffer().sniff(muestra, delimiters=",;\t").delimiter
+        return csv.Sniffer().sniff(texto[:4096], delimiters=",;\t").delimiter
     except csv.Error:
         return ","
 
 
-def detectar_csv(ruta_csv, num_filas_muestra=5, encoding="utf-8-sig"):
-    """Devuelve (cabeceras, filas_muestra, separador) para poder decidir el mapeo."""
-    separador = _detectar_separador(ruta_csv, encoding)
-    with open(ruta_csv, newline="", encoding=encoding) as f:
-        lector = csv.reader(f, delimiter=separador)
-        cabeceras = [c.strip() for c in next(lector)]
-        filas_muestra = [fila for _, fila in zip(range(num_filas_muestra), lector)]
+def detectar_csv(ruta_csv=None, num_filas_muestra=5, encoding="utf-8-sig", contenido=None):
+    """Devuelve (cabeceras, filas_muestra, separador) para poder decidir el mapeo.
+
+    Acepta una ruta de fichero (ruta_csv) o el texto ya en memoria
+    (contenido) — ver el docstring del modulo."""
+    texto = _texto_completo(ruta_csv, contenido, encoding)
+    separador = _detectar_separador(texto)
+    lector = csv.reader(io.StringIO(texto), delimiter=separador)
+    cabeceras = [c.strip() for c in next(lector)]
+    filas_muestra = [fila for _, fila in zip(range(num_filas_muestra), lector)]
     return cabeceras, filas_muestra, separador
 
 
@@ -121,10 +138,13 @@ def _clasificar_tipo(valor_bruto, tipos):
     return None
 
 
-def leer_operaciones(ruta_csv, mapeo=None, tipos=None, preset=None,
+def leer_operaciones(ruta_csv=None, mapeo=None, tipos=None, preset=None,
                       ruta_presets=RUTA_PRESETS_POR_DEFECTO, separador=None,
-                      encoding="utf-8-sig"):
+                      encoding="utf-8-sig", contenido=None):
     """Lee un CSV de operaciones y lo convierte al modelo de calculadora.py.
+
+    Acepta una ruta de fichero (ruta_csv) o el texto ya en memoria
+    (contenido) — ver el docstring del modulo.
 
     mapeo: {"fecha": columna, "tipo": columna, "valor": columna,
             "cantidad": columna, "precio": columna,
@@ -166,71 +186,71 @@ def leer_operaciones(ruta_csv, mapeo=None, tipos=None, preset=None,
         raise ErrorLectorCSV(f"Falta mapear estas columnas obligatorias: {', '.join(faltan)}")
 
     tipos = tipos or TIPOS_POR_DEFECTO
-    separador = separador or _detectar_separador(ruta_csv, encoding)
+    texto = _texto_completo(ruta_csv, contenido, encoding)
+    separador = separador or _detectar_separador(texto)
 
-    with open(ruta_csv, newline="", encoding=encoding) as f:
-        lector = csv.DictReader(f, delimiter=separador)
-        lector.fieldnames = [c.strip() for c in (lector.fieldnames or [])]
-        cabeceras = lector.fieldnames
+    lector = csv.DictReader(io.StringIO(texto), delimiter=separador)
+    lector.fieldnames = [c.strip() for c in (lector.fieldnames or [])]
+    cabeceras = lector.fieldnames
 
-        columnas_del_mapeo = list(mapeo.values())
-        faltan_en_csv = [columna for columna in columnas_del_mapeo if columna not in cabeceras]
-        if faltan_en_csv:
-            raise ErrorLectorCSV(
-                f"El CSV no tiene estas columnas del mapeo: {', '.join(faltan_en_csv)} "
-                f"(columnas disponibles: {', '.join(cabeceras)})"
-            )
+    columnas_del_mapeo = list(mapeo.values())
+    faltan_en_csv = [columna for columna in columnas_del_mapeo if columna not in cabeceras]
+    if faltan_en_csv:
+        raise ErrorLectorCSV(
+            f"El CSV no tiene estas columnas del mapeo: {', '.join(faltan_en_csv)} "
+            f"(columnas disponibles: {', '.join(cabeceras)})"
+        )
 
-        pendientes_por_valor = defaultdict(list)      # valor -> [(fecha_date, operacion), ...]
-        pendientes_dividendos_por_valor = defaultdict(list)   # valor -> [(fecha_date, dividendo), ...]
-        avisos = []
+    pendientes_por_valor = defaultdict(list)      # valor -> [(fecha_date, operacion), ...]
+    pendientes_dividendos_por_valor = defaultdict(list)   # valor -> [(fecha_date, dividendo), ...]
+    avisos = []
 
-        for num_fila, fila in enumerate(lector, start=2):   # la fila 1 es la cabecera
-            tipo_bruto = fila[mapeo["tipo"]]
-            categoria = _clasificar_tipo(tipo_bruto, tipos)
+    for num_fila, fila in enumerate(lector, start=2):   # la fila 1 es la cabecera
+        tipo_bruto = fila[mapeo["tipo"]]
+        categoria = _clasificar_tipo(tipo_bruto, tipos)
 
-            if categoria is None:
-                avisos.append(f"Fila {num_fila}: tipo '{tipo_bruto}' no reconocido, se ignora")
-                continue
-            if categoria == "ignorar":
-                avisos.append(f"Fila {num_fila}: '{tipo_bruto}' no es una compraventa ni un dividendo, se ignora")
-                continue
+        if categoria is None:
+            avisos.append(f"Fila {num_fila}: tipo '{tipo_bruto}' no reconocido, se ignora")
+            continue
+        if categoria == "ignorar":
+            avisos.append(f"Fila {num_fila}: '{tipo_bruto}' no es una compraventa ni un dividendo, se ignora")
+            continue
 
-            try:
-                fecha = _parsear_fecha(fila[mapeo["fecha"]])
-                cantidad = _parsear_numero(fila[mapeo["cantidad"]])
-                precio = _parsear_numero(fila[mapeo["precio"]])
-                comision = _parsear_numero(fila[mapeo["comision"]]) if "comision" in mapeo else None
-            except ErrorLectorCSV as error:
-                avisos.append(f"Fila {num_fila}: {error}, se ignora")
-                continue
+        try:
+            fecha = _parsear_fecha(fila[mapeo["fecha"]])
+            cantidad = _parsear_numero(fila[mapeo["cantidad"]])
+            precio = _parsear_numero(fila[mapeo["precio"]])
+            comision = _parsear_numero(fila[mapeo["comision"]]) if "comision" in mapeo else None
+        except ErrorLectorCSV as error:
+            avisos.append(f"Fila {num_fila}: {error}, se ignora")
+            continue
 
-            if cantidad is None or precio is None:
-                avisos.append(f"Fila {num_fila}: falta cantidad o precio, se ignora")
-                continue
+        if cantidad is None or precio is None:
+            avisos.append(f"Fila {num_fila}: falta cantidad o precio, se ignora")
+            continue
 
-            valor = fila[mapeo["valor"]].strip()
+        valor = fila[mapeo["valor"]].strip()
 
-            if categoria == "dividendo":
-                dividendo = {
-                    "fecha": fecha.strftime("%d/%m/%Y"),
-                    "bruto": Decimal(cantidad) * Decimal(precio),
-                    "retencion": Decimal(comision) if comision is not None else Decimal("0"),
-                }
-                pendientes_dividendos_por_valor[valor].append((fecha, dividendo))
-                continue
-
-            divisa = fila[mapeo["divisa"]].strip() if "divisa" in mapeo else ""
-
-            operacion = {
+        if categoria == "dividendo":
+            dividendo = {
                 "fecha": fecha.strftime("%d/%m/%Y"),
-                "tipo": categoria,
-                "acciones": cantidad,
-                "precio_usd": precio,   # nombre historico del campo: precio en la divisa de la operacion
-                "comision_eur": comision if comision is not None else "0",
-                "divisa": divisa or "EUR",
+                "bruto": Decimal(cantidad) * Decimal(precio),
+                "retencion": Decimal(comision) if comision is not None else Decimal("0"),
             }
-            pendientes_por_valor[valor].append((fecha, operacion))
+            pendientes_dividendos_por_valor[valor].append((fecha, dividendo))
+            continue
+
+        divisa = fila[mapeo["divisa"]].strip() if "divisa" in mapeo else ""
+
+        operacion = {
+            "fecha": fecha.strftime("%d/%m/%Y"),
+            "tipo": categoria,
+            "acciones": cantidad,
+            "precio_usd": precio,   # nombre historico del campo: precio en la divisa de la operacion
+            "comision_eur": comision if comision is not None else "0",
+            "divisa": divisa or "EUR",
+        }
+        pendientes_por_valor[valor].append((fecha, operacion))
 
     operaciones_por_valor = _agrupar_ordenado(pendientes_por_valor)
     dividendos_por_valor = _agrupar_ordenado(pendientes_dividendos_por_valor)

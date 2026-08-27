@@ -42,6 +42,36 @@ def _csv_temporal(contenido):
     return ruta
 
 
+class TestLeerDesdeContenidoEnMemoria(unittest.TestCase):
+    """La web (Pyodide) nunca escribe el CSV a disco: pasa el texto tal
+    cual, leido del navegador con el File API. Estas dos funciones tienen
+    que aceptarlo igual que una ruta de fichero."""
+
+    CONTENIDO = (
+        "Fecha;Tipo;ISIN;Cantidad;Precio;Moneda;Comision\n"
+        "05/01/2024;Compra;XX0000000000;10;80,50;EUR;1\n"
+    )
+
+    def test_detectar_csv_desde_contenido(self):
+        cabeceras, filas_muestra, separador = detectar_csv(contenido=self.CONTENIDO)
+
+        self.assertEqual(separador, ";")
+        self.assertEqual(cabeceras, ["Fecha", "Tipo", "ISIN", "Cantidad", "Precio", "Moneda", "Comision"])
+        self.assertEqual(filas_muestra[0][0], "05/01/2024")
+
+    def test_leer_operaciones_desde_contenido(self):
+        operaciones_por_valor, _, avisos = leer_operaciones(contenido=self.CONTENIDO, mapeo=MAPEO_EJEMPLO)
+
+        self.assertEqual(avisos, [])
+        op = operaciones_por_valor["XX0000000000"][0]
+        self.assertEqual(op["acciones"], "10")
+        self.assertEqual(op["precio_usd"], "80.50")
+
+    def test_sin_ruta_ni_contenido_da_error_claro(self):
+        with self.assertRaises(ErrorLectorCSV):
+            leer_operaciones(mapeo=MAPEO_EJEMPLO)
+
+
 class TestDetectarCSV(unittest.TestCase):
     def test_detecta_cabeceras_y_primeras_filas(self):
         cabeceras, filas_muestra, separador = detectar_csv(RUTA_EJEMPLO, num_filas_muestra=3)
