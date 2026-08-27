@@ -12,9 +12,10 @@ Flujo tipico:
     mapeo = {"fecha": "Fecha operacion", "tipo": "Tipo", "valor": "ISIN",
              "cantidad": "Cantidad", "precio": "Precio", "divisa": "Moneda",
              "comision": "Comision"}
-    operaciones_por_valor, avisos = leer_operaciones("extracto.csv", mapeo)
+    operaciones_por_valor, dividendos_por_valor, avisos = leer_operaciones("extracto.csv", mapeo)
     for valor, operaciones in operaciones_por_valor.items():
         ganancia, lotes = calcular_detalle(operaciones)
+    resumen = resumir_dividendos(dividendos_por_valor)   # rendimiento del capital mobiliario
 """
 
 import csv
@@ -22,6 +23,7 @@ import json
 import os
 from collections import defaultdict
 from datetime import datetime
+from decimal import Decimal
 
 CAMPOS_OBLIGATORIOS = ("fecha", "tipo", "valor", "cantidad", "precio")
 CAMPOS_OPCIONALES = ("divisa", "comision")
@@ -30,14 +32,17 @@ FORMATOS_FECHA = ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y", "%d.%m.%Y")
 
 RUTA_PRESETS_POR_DEFECTO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "presets_broker.json")
 
-# Categorias reconocidas en la columna "tipo". Todo lo que caiga en
-# "ignorar" (o no coincida con nada) se avisa y se excluye del calculo:
-# nunca se cuela un dividendo o un traspaso como si fuera una compraventa.
+# Categorias reconocidas en la columna "tipo". "dividendo" se extrae aparte
+# (es rendimiento del capital mobiliario, casilla distinta a las ganancias
+# patrimoniales: NUNCA debe acabar como un aviso descartable). Todo lo que
+# caiga en "ignorar" (o no coincida con nada) se avisa y se excluye del
+# calculo sin mas: traspasos, intereses, etc. no son operaciones de compraventa.
 TIPOS_POR_DEFECTO = {
     "compra": ["compra", "buy", "purchase"],
     "venta": ["venta", "sell", "sale"],
+    "dividendo": ["dividendo", "dividend"],
     "ignorar": [
-        "dividendo", "dividend", "traspaso", "transfer",
+        "traspaso", "transfer",
         "interes", "interés", "interest", "abono", "retencion", "retención",
     ],
 }
@@ -124,21 +129,31 @@ def leer_operaciones(ruta_csv, mapeo=None, tipos=None, preset=None,
     mapeo: {"fecha": columna, "tipo": columna, "valor": columna,
             "cantidad": columna, "precio": columna,
             "divisa": columna (opcional, si falta se asume "EUR"),
-            "comision": columna (opcional, si falta se asume 0)}
+            "comision": columna (opcional; en compras/ventas es la comision,
+                en dividendos se interpreta como la retencion practicada;
+                si falta la columna, se asume 0)}
     tipos: como TIPOS_POR_DEFECTO, para reconocer que texto de la columna
-           "tipo" es compra/venta/ignorar. Si no se da, se usa TIPOS_POR_DEFECTO.
+           "tipo" es compra/venta/dividendo/ignorar. Si no se da, se usa
+           TIPOS_POR_DEFECTO.
     preset: nombre de un preset guardado con guardar_preset(); si se da,
             sustituye a mapeo/tipos (no hace falta pasar los dos).
 
-    Devuelve (operaciones_por_valor, avisos):
+    Devuelve (operaciones_por_valor, dividendos_por_valor, avisos):
       operaciones_por_valor: {valor_o_isin: [operacion, ...]}, cada lista ya
         ordenada por fecha y lista para pasar directamente a
         calculadora.calcular_detalle(). El motor de calculadora.py hace FIFO
         sobre una unica lista, por eso aqui se separa por valor: cada ISIN
         es una serie independiente.
-      avisos: filas que se han ignorado (tipo no reconocido, numero invalido...)
-        o que no son compraventas (dividendos, traspasos...), para que se
-        puedan revisar. Ninguna fila de aqui entra en operaciones_por_valor.
+      dividendos_por_valor: {valor_o_isin: [{"fecha": "DD/MM/AAAA",
+        "bruto": Decimal, "retencion": Decimal}, ...]}. Los dividendos son
+        rendimiento del capital mobiliario, NO ganancia patrimonial: van en
+        una casilla distinta de la renta y por eso se devuelven aparte, sin
+        pasar nunca por calcular_detalle(). Usa resumir_dividendos() para
+        los totales.
+      avisos: filas que se han ignorado por tipo no reconocido, numero
+        invalido, o por no ser una compraventa/dividendo (traspasos,
+        intereses...). Ninguna fila de aqui entra en operaciones_por_valor
+        ni en dividendos_por_valor.
     """
     if preset is not None:
         mapeo, tipos = cargar_preset(preset, ruta_presets)
@@ -166,7 +181,8 @@ def leer_operaciones(ruta_csv, mapeo=None, tipos=None, preset=None,
                 f"(columnas disponibles: {', '.join(cabeceras)})"
             )
 
-        pendientes_por_valor = defaultdict(list)   # valor -> [(fecha_date, operacion), ...]
+        pendientes_por_valor = defaultdict(list)      # valor -> [(fecha_date, operacion), ...]
+        pendientes_dividendos_por_valor = defaultdict(list)   # valor -> [(fecha_date, dividendo), ...]
         avisos = []
 
         for num_fila, fila in enumerate(lector, start=2):   # la fila 1 es la cabecera
@@ -177,7 +193,7 @@ def leer_operaciones(ruta_csv, mapeo=None, tipos=None, preset=None,
                 avisos.append(f"Fila {num_fila}: tipo '{tipo_bruto}' no reconocido, se ignora")
                 continue
             if categoria == "ignorar":
-                avisos.append(f"Fila {num_fila}: '{tipo_bruto}' no es una compraventa, se ignora")
+                avisos.append(f"Fila {num_fila}: '{tipo_bruto}' no es una compraventa ni un dividendo, se ignora")
                 continue
 
             try:
@@ -194,6 +210,16 @@ def leer_operaciones(ruta_csv, mapeo=None, tipos=None, preset=None,
                 continue
 
             valor = fila[mapeo["valor"]].strip()
+
+            if categoria == "dividendo":
+                dividendo = {
+                    "fecha": fecha.strftime("%d/%m/%Y"),
+                    "bruto": Decimal(cantidad) * Decimal(precio),
+                    "retencion": Decimal(comision) if comision is not None else Decimal("0"),
+                }
+                pendientes_dividendos_por_valor[valor].append((fecha, dividendo))
+                continue
+
             divisa = fila[mapeo["divisa"]].strip() if "divisa" in mapeo else ""
 
             operacion = {
@@ -206,12 +232,39 @@ def leer_operaciones(ruta_csv, mapeo=None, tipos=None, preset=None,
             }
             pendientes_por_valor[valor].append((fecha, operacion))
 
-    operaciones_por_valor = {}
-    for valor, pendientes in pendientes_por_valor.items():
-        pendientes.sort(key=lambda par: par[0])   # FIFO exige orden cronologico
-        operaciones_por_valor[valor] = [operacion for _, operacion in pendientes]
+    operaciones_por_valor = _agrupar_ordenado(pendientes_por_valor)
+    dividendos_por_valor = _agrupar_ordenado(pendientes_dividendos_por_valor)
 
-    return operaciones_por_valor, avisos
+    return operaciones_por_valor, dividendos_por_valor, avisos
+
+
+def _agrupar_ordenado(pendientes_por_valor):
+    """[(fecha, dato), ...] por valor -> [dato, ...] por valor, en orden cronologico."""
+    agrupado = {}
+    for valor, pendientes in pendientes_por_valor.items():
+        pendientes.sort(key=lambda par: par[0])
+        agrupado[valor] = [dato for _, dato in pendientes]
+    return agrupado
+
+
+def resumir_dividendos(dividendos_por_valor):
+    """Totales de dividendos brutos y retencion (rendimiento del capital
+    mobiliario), en conjunto y por valor. Devuelve:
+      {"bruto_total": Decimal, "retencion_total": Decimal,
+       "por_valor": {valor: {"bruto": Decimal, "retencion": Decimal}}}
+    """
+    por_valor = {}
+    bruto_total = Decimal("0")
+    retencion_total = Decimal("0")
+
+    for valor, dividendos in dividendos_por_valor.items():
+        bruto_valor = sum((d["bruto"] for d in dividendos), Decimal("0"))
+        retencion_valor = sum((d["retencion"] for d in dividendos), Decimal("0"))
+        por_valor[valor] = {"bruto": bruto_valor, "retencion": retencion_valor}
+        bruto_total += bruto_valor
+        retencion_total += retencion_valor
+
+    return {"bruto_total": bruto_total, "retencion_total": retencion_total, "por_valor": por_valor}
 
 
 def guardar_preset(nombre, mapeo, tipos=None, ruta_presets=RUTA_PRESETS_POR_DEFECTO):

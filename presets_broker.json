@@ -15,9 +15,11 @@
         "buy",
         "purchase"
       ],
-      "ignorar": [
+      "dividendo": [
         "dividendo",
-        "dividend",
+        "dividend"
+      ],
+      "ignorar": [
         "traspaso",
         "transfer",
         "interes",
