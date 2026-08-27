@@ -1,0 +1,48 @@
+name: Sincronizar motor con la web
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "calculadora.py"
+      - "tipos_cambio.py"
+      - "lector_csv.py"
+      - "motor_web.py"
+      - "presets_broker.json"
+      - "scripts/sincronizar_motor_web.py"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  sincronizar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      # Antes de publicar nada en la web, que pase toda la batería de
+      # tests. Si algo del motor está roto, no se sincroniza.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Ejecutar los tests
+        run: python3 -m unittest discover -p "test_*.py" -v
+
+      - name: Copiar el motor a web/motor/
+        run: python3 scripts/sincronizar_motor_web.py
+
+      - name: Commitear si hay cambios
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet -- web/motor/; then
+            echo "web/motor/ ya estaba al día, nada que commitear."
+            exit 0
+          fi
+          git add web/motor/
+          git commit -m "Sincroniza web/motor/ con el motor de cálculo"
+          git push origin main

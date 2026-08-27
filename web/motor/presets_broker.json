@@ -1,0 +1,39 @@
+{
+  "trade_republic": {
+    "mapeo": {
+      "cantidad": "cantidad",
+      "comision": "comision_eur",
+      "divisa": "divisa",
+      "fecha": "fecha",
+      "precio": "precio",
+      "tipo": "tipo",
+      "valor": "isin"
+    },
+    "tipos": {
+      "compra": [
+        "compra",
+        "buy",
+        "purchase"
+      ],
+      "dividendo": [
+        "dividendo",
+        "dividend"
+      ],
+      "ignorar": [
+        "traspaso",
+        "transfer",
+        "interes",
+        "interés",
+        "interest",
+        "abono",
+        "retencion",
+        "retención"
+      ],
+      "venta": [
+        "venta",
+        "sell",
+        "sale"
+      ]
+    }
+  }
+}

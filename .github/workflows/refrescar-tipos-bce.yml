@@ -1,0 +1,41 @@
+name: Refrescar tipos de cambio del BCE
+
+on:
+  schedule:
+    # Todos los días a las 18:00 UTC (el BCE publica sobre las 16:00 CET
+    # en días hábiles; a esa hora ya está publicado).
+    - cron: "0 18 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  refrescar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Falla ruidosamente (exit != 0) si el BCE cambia el formato o el
+      # fichero descargado no pasa la validacion. En ese caso el job se
+      # marca en rojo y NO se toca el fichero ya publicado.
+      - name: Descargar, validar y publicar
+        run: python3 scripts/actualizar_tipos_bce.py
+
+      - name: Commitear si hay cambios
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet -- web/motor/cache/eurofxref-hist.xml; then
+            echo "Sin cambios en los tipos de cambio, nada que commitear."
+            exit 0
+          fi
+          git add web/motor/cache/eurofxref-hist.xml
+          git commit -m "Refresca tipos de cambio del BCE"
+          git push origin main

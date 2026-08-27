@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Calculadora FIFO para la renta</title>
+<link rel="stylesheet" href="estilo.css">
+</head>
+<body>
+
+<header class="cabecera">
+  <h1>Calculadora FIFO para la renta</h1>
+  <p class="subtitulo">FIFO, tipos de cambio oficiales del BCE y la regla de los 2 meses, a partir del extracto de tu bróker.</p>
+</header>
+
+<main>
+
+  <section class="aviso aviso-privacidad" aria-label="Privacidad">
+    <strong>Tu fichero nunca sale de este navegador.</strong>
+    Todo el cálculo se hace aquí mismo, con Python compilado a WebAssembly (Pyodide).
+    No hay servidor: nadie recibe tu extracto, ni siquiera nosotros. Puedes comprobarlo
+    tú mismo en la pestaña "Red" de las herramientas de desarrollador de tu navegador —
+    no verás ninguna subida del fichero.
+  </section>
+
+  <section class="aviso aviso-legal" aria-label="Aviso legal">
+    <strong>Esto es una ayuda de cálculo, no asesoramiento fiscal.</strong>
+    Revisa siempre el resultado antes de presentar tu declaración. En caso de duda,
+    consulta con un profesional.
+  </section>
+
+  <section id="estado-motor" class="estado-motor">
+    <span class="spinner" aria-hidden="true"></span>
+    <span id="estado-motor-texto">Cargando el motor de cálculo…</span>
+  </section>
+
+  <section id="frescura-bce" class="frescura-bce oculto" aria-live="polite"></section>
+
+  <section id="zona-carga" class="tarjeta oculto">
+    <h2>1. Elige tu extracto</h2>
+    <div id="zona-drop" class="zona-drop" tabindex="0" role="button"
+         aria-label="Arrastra aquí tu CSV, o pulsa para elegir el fichero">
+      <p><strong>Arrastra aquí tu CSV</strong> o pulsa para elegirlo</p>
+      <p class="texto-pequeno">Solo ficheros .csv. Nada se sube a ningún sitio.</p>
+      <input type="file" id="input-fichero" accept=".csv,text/csv" hidden>
+    </div>
+    <p id="nombre-fichero" class="texto-pequeno oculto"></p>
+  </section>
+
+  <section id="zona-mapeo" class="tarjeta oculto">
+    <h2>2. Indica qué columna es cada cosa</h2>
+
+    <div id="preset-sugerido" class="aviso aviso-info oculto"></div>
+
+    <div class="fila-preset">
+      <label for="select-preset">Preset guardado</label>
+      <select id="select-preset">
+        <option value="">— Elegir columnas a mano —</option>
+      </select>
+    </div>
+
+    <table id="tabla-mapeo" class="tabla-mapeo">
+      <thead>
+        <tr><th>Campo</th><th>Columna del CSV</th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+
+    <details class="vista-previa">
+      <summary>Ver las primeras filas del fichero</summary>
+      <div class="tabla-scroll">
+        <table id="tabla-muestra"></table>
+      </div>
+    </details>
+
+    <button id="boton-calcular" class="boton-primario" disabled>Calcular</button>
+  </section>
+
+  <section id="zona-error" class="tarjeta aviso aviso-error oculto" role="alert"></section>
+
+  <section id="zona-resultado" class="oculto">
+
+    <div id="totales" class="tarjeta"></div>
+
+    <div id="avisos-lectura" class="tarjeta oculto"></div>
+
+    <div id="dividendos" class="tarjeta oculto"></div>
+
+    <div id="desglose-por-valor"></div>
+
+    <button id="boton-descargar" class="boton-secundario oculto">Descargar desglose en CSV</button>
+
+  </section>
+
+</main>
+
+<footer class="pie">
+  <p>Sin servidor, sin cuentas, sin cookies de seguimiento. Código abierto.</p>
+</footer>
+
+<script src="https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
