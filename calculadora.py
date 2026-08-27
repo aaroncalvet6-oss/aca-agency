@@ -142,6 +142,7 @@ def _simular(operaciones, perdida_bloqueada_por_venta, coste_extra_por_compra, i
     lotes = []       # cada lote: acciones que LE QUEDAN y lo que costo cada accion
     ganancia = Decimal("0")
     resultados_venta = {}   # indice de la operacion -> resultado (ganancia o perdida) de esa venta
+    detalle_ventas = []     # una fila por venta, en orden, para el desglose operacion a operacion
 
     for idx, op in enumerate(operaciones):
         total_eur = a_euros(op)
@@ -165,30 +166,25 @@ def _simular(operaciones, perdida_bloqueada_por_venta, coste_extra_por_compra, i
             resultado_declarado = resultado_venta + bloqueado
             ganancia += resultado_declarado
 
+            detalle_ventas.append({
+                "fecha": op["fecha"],
+                "resultado_bruto": resultado_venta,
+                "bloqueado": bloqueado,
+                "resultado_declarado": resultado_declarado,
+            })
+
             if bloqueado and imprimir_traza:
                 print(f"  venta {op['fecha']}: {bloqueado:.2f} de la perdida no se declara "
                       f"(regla de los 2 meses, art. 33.5.f LIRPF); queda una perdida declarable "
                       f"de {resultado_declarado:.2f}")
 
-    return ganancia, resultados_venta, lotes
+    return ganancia, resultados_venta, lotes, detalle_ventas
 
 
-def calcular_detalle(operaciones):
-    """Igual que calcular_ganancia, pero devuelve tambien los lotes que
-    quedan sin vender al final (con su coste ya ajustado por la regla de
-    los 2 meses si aplica). Util para verificar en tests el coste de un
-    lote recomprado, ademas de la ganancia declarable."""
-    # Pasada 1: FIFO normal, sin aplicar todavia la regla de los 2 meses,
-    # solo para saber que ventas dan perdida y de cuanto.
-    _, resultados_venta, _ = _simular(operaciones, perdida_bloqueada_por_venta={}, coste_extra_por_compra={},
-                                       imprimir_traza=False)
-
-    # Para cada perdida, se suman las acciones de TODAS las compras del
-    # mismo valor en la ventana de los 2 meses (antes o despues). Se
-    # bloquea la parte de la perdida proporcional a esas acciones
-    # recompradas en conjunto (el resto se declara con normalidad), y ese
-    # importe se reparte entre los lotes recomprados en proporcion a sus
-    # propias acciones. Nunca se aplica a ganancias.
+def _aplicar_regla_dos_meses(operaciones, resultados_venta):
+    """A partir de los resultados brutos (pasada 1), calcula que parte de
+    cada perdida se bloquea (art. 33.5.f LIRPF) y a que lotes recomprados
+    se les suma. Ver calcular_detalle() para el porque de cada paso."""
     perdida_bloqueada_por_venta = {}
     coste_extra_por_compra = defaultdict(lambda: Decimal("0"))
 
@@ -211,11 +207,47 @@ def calcular_detalle(operaciones):
             parte = bloqueado * (_decimal(operaciones[i]["acciones"]) / acciones_recompradas)
             coste_extra_por_compra[i] += parte
 
+    return perdida_bloqueada_por_venta, coste_extra_por_compra
+
+
+def calcular_desglose(operaciones):
+    """Como calcular_detalle, pero devuelve tambien el detalle operacion a
+    operacion (una fila por venta) que necesita la web para mostrar el
+    desglose. No se ha tocado calcular_detalle para no romper su
+    contrato ya usado en otros sitios.
+
+    Devuelve (ganancia, lotes_finales, detalle_ventas), con
+    detalle_ventas = [{"fecha", "resultado_bruto", "bloqueado",
+    "resultado_declarado"}, ...] en el mismo orden que las ventas del
+    fichero de entrada.
+    """
+    # Pasada 1: FIFO normal, sin aplicar todavia la regla de los 2 meses,
+    # solo para saber que ventas dan perdida y de cuanto.
+    _, resultados_venta, _, _ = _simular(operaciones, perdida_bloqueada_por_venta={}, coste_extra_por_compra={},
+                                          imprimir_traza=False)
+
+    # Para cada perdida, se suman las acciones de TODAS las compras del
+    # mismo valor en la ventana de los 2 meses (antes o despues). Se
+    # bloquea la parte de la perdida proporcional a esas acciones
+    # recompradas en conjunto (el resto se declara con normalidad), y ese
+    # importe se reparte entre los lotes recomprados en proporcion a sus
+    # propias acciones. Nunca se aplica a ganancias.
+    perdida_bloqueada_por_venta, coste_extra_por_compra = _aplicar_regla_dos_meses(operaciones, resultados_venta)
+
     # Pasada 2: FIFO definitivo, ya con la parte bloqueada de cada perdida
     # neutralizada y sumada al coste del lote recomprado correspondiente.
-    ganancia, _, lotes_finales = _simular(operaciones, perdida_bloqueada_por_venta, coste_extra_por_compra,
-                                           imprimir_traza=True)
+    ganancia, _, lotes_finales, detalle_ventas = _simular(operaciones, perdida_bloqueada_por_venta,
+                                                           coste_extra_por_compra, imprimir_traza=True)
 
+    return ganancia, lotes_finales, detalle_ventas
+
+
+def calcular_detalle(operaciones):
+    """Igual que calcular_ganancia, pero devuelve tambien los lotes que
+    quedan sin vender al final (con su coste ya ajustado por la regla de
+    los 2 meses si aplica). Util para verificar en tests el coste de un
+    lote recomprado, ademas de la ganancia declarable."""
+    ganancia, lotes_finales, _ = calcular_desglose(operaciones)
     return ganancia, lotes_finales
 
 

@@ -15,7 +15,7 @@ from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 from unittest.mock import patch
 
-from calculadora import a_euros, calcular_detalle, calcular_ganancia
+from calculadora import a_euros, calcular_desglose, calcular_detalle, calcular_ganancia
 
 CENTIMO = Decimal("0.01")
 
@@ -228,6 +228,44 @@ class TestEuroYPrecisionDecimal(unittest.TestCase):
         self.assertEqual(f"{ganancia:.2f}", "137.67")
         self.assertEqual(len(lotes_finales), 1)
         self.assertEqual(lotes_finales[0]["acciones"], Decimal("1.0"))
+
+
+class TestCalcularDesglose(unittest.TestCase):
+    def test_coincide_con_calcular_detalle_y_anade_una_fila_por_venta(self):
+        operaciones = [
+            {"fecha": "15/01", "tipo": "compra", "acciones": 10, "precio_usd": 300, "comision_eur": 1, "cambio": 1.09},
+            {"fecha": "20/03", "tipo": "compra", "acciones": 5,  "precio_usd": 350, "comision_eur": 1, "cambio": 1.08},
+            {"fecha": "10/09", "tipo": "venta",  "acciones": 12, "precio_usd": 400, "comision_eur": 1, "cambio": 1.10},
+        ]
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            ganancia, lotes_finales, detalle_ventas = calcular_desglose(operaciones)
+            ganancia_detalle, lotes_detalle = calcular_detalle(operaciones)
+
+        self.assertEqual(ganancia, ganancia_detalle)
+        self.assertEqual(lotes_finales, lotes_detalle)
+
+        self.assertEqual(len(detalle_ventas), 1)
+        fila = detalle_ventas[0]
+        self.assertEqual(fila["fecha"], "10/09")
+        self.assertEqual(fila["bloqueado"], Decimal("0"))
+        self.assertEqual(fila["resultado_bruto"], fila["resultado_declarado"])
+        self.assertEqual(f"{fila['resultado_declarado']:.2f}", "960.80")
+
+    def test_fila_de_venta_bloqueada_muestra_bruto_y_declarado_distintos(self):
+        operaciones = [
+            {"fecha": "10/01", "tipo": "compra", "acciones": 10, "precio_usd": 100, "comision_eur": 1, "cambio": 1.00},
+            {"fecha": "15/03", "tipo": "venta",  "acciones": 10, "precio_usd": 70,  "comision_eur": 1, "cambio": 1.00},
+            {"fecha": "05/04", "tipo": "compra", "acciones": 4,  "precio_usd": 75,  "comision_eur": 1, "cambio": 1.00},
+        ]
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            _, _, detalle_ventas = calcular_desglose(operaciones)
+
+        fila = detalle_ventas[0]
+        self.assertEqual(f"{fila['resultado_bruto']:.2f}", "-302.00")
+        self.assertEqual(f"{fila['bloqueado']:.2f}", "120.80")
+        self.assertEqual(f"{fila['resultado_declarado']:.2f}", "-181.20")
 
 
 if __name__ == "__main__":
