@@ -32,10 +32,13 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          if git diff --quiet -- web/motor/cache/eurofxref-hist.xml; then
+          # "git add" primero: "git diff" (sin --cached) nunca ve un fichero
+          # nuevo sin trackear, así que con eso solo la primera vez ya se
+          # habría dado por "sin cambios" e incumplido de raiz esta comprobación.
+          git add web/motor/cache/eurofxref-hist.xml
+          if git diff --cached --quiet; then
             echo "Sin cambios en los tipos de cambio, nada que commitear."
             exit 0
           fi
-          git add web/motor/cache/eurofxref-hist.xml
           git commit -m "Refresca tipos de cambio del BCE"
           git push origin main

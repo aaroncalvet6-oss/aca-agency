@@ -39,10 +39,12 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          if git diff --quiet -- web/motor/; then
+          # "git add" primero: "git diff" (sin --cached) nunca ve un
+          # fichero nuevo sin trackear (ver el fix en refrescar-tipos-bce.yml).
+          git add web/motor/
+          if git diff --cached --quiet; then
             echo "web/motor/ ya estaba al día, nada que commitear."
             exit 0
           fi
-          git add web/motor/
           git commit -m "Sincroniza web/motor/ con el motor de cálculo"
           git push origin main
