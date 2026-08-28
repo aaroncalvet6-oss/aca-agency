@@ -32,6 +32,7 @@ const ETIQUETAS_CAMPO = {
 let pyodide = null;
 let lectorCsv = null;
 let motorWeb = null;
+let bceDisponible = false;
 let textoCsvActual = null;
 let cabecerasActuales = [];
 let ultimoResultado = null;
@@ -47,44 +48,77 @@ function escaparHtml(texto) {
   return div.innerHTML;
 }
 
-// --- Arranque: cargar Pyodide + el motor ------------------------------
+// --- Arranque -----------------------------------------------------------
+//
+// Dos etapas INDEPENDIENTES, cada una con su propio estado y su propio
+// mensaje de error, para que un fallo nunca se atribuya al componente
+// equivocado:
+//   1. cargarMotor(): Pyodide + los .py del motor. Si esto falla, no se
+//      puede hacer nada (ni EUR ni nada), así que sí bloquea el resto.
+//   2. cargarTiposBCE(): el fichero de tipos de cambio. Si esto falla,
+//      el motor sigue funcionando perfectamente para operaciones en EUR
+//      (que no necesitan el BCE); solo las de otras divisas fallarán, y
+//      lo harán con su propio error explicado en el desglose de ese
+//      valor — no aquí arriba, y no como si el motor no hubiera cargado.
 
 async function iniciar() {
+  const motorListo = await cargarMotor();
+  if (!motorListo) return;   // sin Python no hay nada que hacer
+
+  mostrar(el("zona-carga"));
+  configurarZonaCarga();
+
+  await cargarTiposBCE();
+}
+
+async function cargarMotor() {
   try {
     pyodide = await loadPyodide();
 
     for (const nombre of FICHEROS_MOTOR) {
       const respuesta = await fetch(`motor/${nombre}`);
-      if (!respuesta.ok) throw new Error(`No se ha podido cargar motor/${nombre} (HTTP ${respuesta.status})`);
+      if (!respuesta.ok) throw new Error(`HTTP ${respuesta.status} al pedir motor/${nombre}`);
       pyodide.FS.writeFile(nombre, await respuesta.text());
     }
-
-    pyodide.FS.mkdir("cache");
-    const respuestaCache = await fetch(`motor/${RUTA_CACHE_BCE}`);
-    if (!respuestaCache.ok) {
-      throw new Error(
-        `No se ha podido cargar el fichero de tipos de cambio del BCE (HTTP ${respuestaCache.status}). ` +
-        "Puede que el job que lo refresca todavía no se haya ejecutado."
-      );
-    }
-    pyodide.FS.writeFile(RUTA_CACHE_BCE, await respuestaCache.text());
 
     lectorCsv = pyodide.pyimport("lector_csv");
     motorWeb = pyodide.pyimport("motor_web");
 
     el("estado-motor-texto").textContent = "Motor de cálculo listo.";
     ocultar(el("estado-motor"));
-
-    mostrarFrescuraBCE();
-    mostrar(el("zona-carga"));
-    configurarZonaCarga();
+    return true;
   } catch (error) {
-    console.error(error);
-    el("estado-motor").querySelector(".spinner").remove();
+    console.error("Fallo cargando el motor de cálculo (Pyodide/Python):", error);
+    el("estado-motor").querySelector(".spinner")?.remove();
     el("estado-motor-texto").innerHTML =
-      "No se ha podido cargar el motor de cálculo. Comprueba tu conexión y recarga la página. " +
+      "No se ha podido cargar el motor de cálculo (Python). Comprueba tu conexión y recarga la página. " +
       `<br><span class="texto-pequeno">${escaparHtml(error.message || String(error))}</span>`;
     el("estado-motor").classList.add("aviso", "aviso-error");
+    return false;
+  }
+}
+
+async function cargarTiposBCE() {
+  try {
+    pyodide.FS.mkdir("cache");
+    const respuesta = await fetch(`motor/${RUTA_CACHE_BCE}`);
+    if (!respuesta.ok) throw new Error(`HTTP ${respuesta.status} al pedir motor/${RUTA_CACHE_BCE}`);
+    pyodide.FS.writeFile(RUTA_CACHE_BCE, await respuesta.text());
+
+    bceDisponible = true;
+    mostrarFrescuraBCE();
+  } catch (error) {
+    console.error("Fallo cargando los tipos de cambio del BCE:", error);
+    bceDisponible = false;
+
+    const contenedor = el("frescura-bce");
+    contenedor.classList.add("desactualizado");
+    contenedor.innerHTML =
+      "No se han podido cargar los tipos de cambio oficiales del BCE " +
+      "(el motor de cálculo sí ha cargado bien). Puedes calcular operaciones en EUR con normalidad; " +
+      "las de otras divisas no se podrán calcular hasta que esto se resuelva. " +
+      `<br><span class="texto-pequeno">${escaparHtml(error.message || String(error))}</span>`;
+    mostrar(contenedor);
   }
 }
 
