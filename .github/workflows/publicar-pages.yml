@@ -5,6 +5,14 @@ on:
     branches: [main]
     paths:
       - "web/**"
+  # Los pushes que hacen los otros dos workflows usan el GITHUB_TOKEN por
+  # defecto, y GitHub NUNCA deja que esos pushes disparen otros workflows
+  # "on: push" (para evitar bucles infinitos) — asi que sin este trigger
+  # aparte, un refresco de datos o una sincronizacion del motor NUNCA
+  # redesplegaria la web sola, pese a lo que decia el commit original.
+  workflow_run:
+    workflows: ["Refrescar tipos de cambio del BCE", "Sincronizar motor con la web"]
+    types: [completed]
   workflow_dispatch: {}
 
 permissions:
@@ -19,12 +27,20 @@ concurrency:
 
 jobs:
   publicar:
+    # Si esto viene de un workflow_run, publicar solo si ese workflow
+    # termino bien: un refresco de BCE o una sincronizacion fallida no
+    # debe desplegar nada (mejor la web ya publicada que una a medias).
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      # ref: main explicito porque con workflow_run el checkout por
+      # defecto no necesariamente resuelve a la ultima main.
       - uses: actions/checkout@v4
+        with:
+          ref: main
 
       - uses: actions/configure-pages@v5
 
