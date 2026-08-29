@@ -3,23 +3,55 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Calculadora FIFO para la renta</title>
+<title>FIFO.es — calcula lo que declaras por tu bróker extranjero</title>
+<meta name="description" content="Convierte el extracto de tu bróker extranjero (Trade Republic, Degiro, Interactive Brokers…) en lo que tienes que declarar a Hacienda: FIFO, tipos del BCE y la regla de los 2 meses, calculados en tu propio navegador.">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0NCA0NCI+PHJlY3Qgd2lkdGg9IjQ0IiBoZWlnaHQ9IjQ0IiByeD0iMTIiIGZpbGw9IiMxYjNhNTMiLz48cmVjdCB4PSI5IiB5PSIxMyIgd2lkdGg9IjExIiBoZWlnaHQ9IjQuNSIgcng9IjIuMjUiIGZpbGw9IiNmNmYyZTkiLz48cGF0aCBkPSJNMjIgMTEuNUwyNyAxNS4yNUwyMiAxOVoiIGZpbGw9IiNmNmYyZTkiLz48cmVjdCB4PSI5IiB5PSIyMCIgd2lkdGg9IjE4IiBoZWlnaHQ9IjQuNSIgcng9IjIuMjUiIGZpbGw9IiNmNmYyZTkiIG9wYWNpdHk9IjAuODUiLz48cmVjdCB4PSI5IiB5PSIyNyIgd2lkdGg9IjE4IiBoZWlnaHQ9IjQuNSIgcng9IjIuMjUiIGZpbGw9IiNmNmYyZTkiIG9wYWNpdHk9IjAuNiIvPjwvc3ZnPg==">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,500;8..60,600;8..60,700&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,500;8..60,600;8..60,700&family=Public+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="estilo.css">
 </head>
 <body>
 
 <header class="cabecera">
-  <p class="ceja">Campaña de la renta</p>
-  <h1>Calculadora FIFO para la renta</h1>
-  <p class="subtitulo">FIFO, tipos de cambio oficiales del BCE y la regla de los 2 meses, a partir del extracto de tu bróker.</p>
-  <p class="franja-confianza">
-    <strong>Tu fichero no sale de este navegador.</strong>
-    Todo el cálculo ocurre aquí, con Python compilado a WebAssembly — no hay servidor de por medio.
+  <div class="marca">
+    <svg class="marca-icono" viewBox="0 0 44 44" width="34" height="34" aria-hidden="true" focusable="false">
+      <rect class="marca-fondo" width="44" height="44" rx="12"/>
+      <rect class="marca-trazo" x="9" y="13" width="11" height="4.5" rx="2.25"/>
+      <path class="marca-trazo" d="M22 11.5L27 15.25L22 19Z"/>
+      <rect class="marca-trazo" x="9" y="20" width="18" height="4.5" rx="2.25" opacity="0.85"/>
+      <rect class="marca-trazo" x="9" y="27" width="18" height="4.5" rx="2.25" opacity="0.6"/>
+    </svg>
+    <span class="marca-nombre">FIFO<span class="marca-dominio">.es</span></span>
+  </div>
+
+  <p class="lema">Calcula lo que declaras a Hacienda al vender acciones o fondos comprados en un bróker extranjero.</p>
+
+  <p class="porque">
+    El informe anual de Trade Republic, Degiro, Interactive Brokers o similares no está adaptado a la
+    normativa española: no aplica FIFO con el criterio de Hacienda, no usa los tipos de cambio oficiales
+    del BCE, y no calcula la regla de los dos meses. Esta herramienta sí.
   </p>
 </header>
+
+<nav class="que-resuelve" aria-label="Qué calcula esta herramienta">
+  <div class="que-resuelve-item">
+    <p class="que-resuelve-titulo">FIFO obligatorio</p>
+    <p class="que-resuelve-texto">Hacienda exige vender siempre las acciones más antiguas primero; nunca puedes elegir el lote que más te convenga.</p>
+  </div>
+  <div class="que-resuelve-item">
+    <p class="que-resuelve-titulo">Tipos oficiales del BCE</p>
+    <p class="que-resuelve-texto">Cada operación en moneda extranjera se convierte a euros con el tipo publicado por el Banco Central Europeo en su fecha exacta.</p>
+  </div>
+  <div class="que-resuelve-item">
+    <p class="que-resuelve-titulo">Regla de los dos meses</p>
+    <p class="que-resuelve-texto">Si recompras el mismo valor en los dos meses antes o después de venderlo con pérdidas, esa pérdida queda bloqueada.</p>
+  </div>
+  <div class="que-resuelve-item">
+    <p class="que-resuelve-titulo">Dividendos aparte</p>
+    <p class="que-resuelve-texto">No son ganancia patrimonial: van en un apartado distinto de la declaración, con su propia retención.</p>
+  </div>
+</nav>
 
 <main>
 
@@ -35,6 +67,11 @@
   </section>
 
   <section id="frescura-bce" class="frescura-bce oculto" aria-live="polite"></section>
+
+  <p class="franja-confianza">
+    <strong>Tu fichero no sale de este navegador.</strong>
+    Todo el cálculo ocurre aquí, con Python compilado a WebAssembly — no hay servidor de por medio.
+  </p>
 
   <section id="zona-carga" class="tarjeta oculto" aria-labelledby="titulo-paso-1">
     <h2 id="titulo-paso-1"><span class="paso-etiqueta">Paso 1</span> Elige tu extracto</h2>
@@ -99,7 +136,9 @@
   <section id="zona-resultado" class="oculto" aria-labelledby="titulo-paso-3">
     <h2 id="titulo-paso-3" class="visualmente-oculto"><span class="paso-etiqueta">Paso 3</span> Resultado</h2>
 
-    <div id="totales" class="tarjeta tarjeta-total"></div>
+    <div id="totales" class="tarjeta-total"></div>
+
+    <div id="donde-va-esto" class="tarjeta oculto"></div>
 
     <div id="avisos-lectura" class="tarjeta oculto"></div>
 
@@ -116,10 +155,91 @@
     presentar tu declaración; en caso de duda, consulta con un profesional.
   </p>
 
+  <details class="tarjeta seccion-plegable">
+    <summary><h2>Cómo funciona por dentro</h2></summary>
+    <div class="cuerpo-plegable">
+      <p>
+        La transparencia es el argumento: no hay caja negra. Así es el cálculo, paso a paso.
+      </p>
+      <ol class="lista-pasos-tecnicos">
+        <li>
+          <strong>Lectura del CSV.</strong> Cada fila se clasifica como compra, venta, dividendo, o se
+          descarta (traspasos, intereses…) avisando por qué.
+        </li>
+        <li>
+          <strong>Conversión a euros.</strong> Las operaciones en divisa distinta del euro se convierten
+          con el tipo de cambio oficial del BCE publicado para esa fecha exacta — nunca un tipo aproximado,
+          y nunca uno posterior a la operación.
+        </li>
+        <li>
+          <strong>FIFO por valor.</strong> Para cada ISIN, las ventas consumen las compras más antiguas
+          primero, en orden cronológico real (no el orden de las filas del fichero).
+        </li>
+        <li>
+          <strong>Regla de los dos meses (art. 33.5.f LIRPF).</strong> Si una venta da pérdidas y hay
+          recompras del mismo valor en la ventana de ±2 meses, la parte proporcional de la pérdida se
+          bloquea y se traslada al coste del lote recomprado, en vez de declararse ya.
+        </li>
+        <li>
+          <strong>Dividendos aparte.</strong> Se sacan del cálculo de ganancia patrimonial y se totalizan
+          por su cuenta, con su bruto y su retención.
+        </li>
+      </ol>
+      <p class="texto-pequeno">
+        El motor que hace estos cálculos está probado con una batería de tests automáticos y su código
+        es público: <a href="https://github.com/aaroncalvet6-oss/aca-agency" target="_blank" rel="noopener">github.com/aaroncalvet6-oss/aca-agency</a>.
+      </p>
+    </div>
+  </details>
+
+  <details class="tarjeta seccion-plegable">
+    <summary><h2>Preguntas frecuentes</h2></summary>
+    <div class="cuerpo-plegable">
+      <dl class="lista-faq">
+        <div>
+          <dt>¿Es seguro subir aquí mi extracto bancario?</dt>
+          <dd>
+            Sí: el fichero nunca sale de tu navegador. No hay servidor, no hay subida, no hay
+            almacenamiento — todo el cálculo lo hace Python compilado a WebAssembly (Pyodide) dentro de
+            esta misma pestaña. Puedes comprobarlo tú mismo en la pestaña "Red" de las herramientas de
+            desarrollador: no verás ninguna subida del fichero.
+          </dd>
+        </div>
+        <div>
+          <dt>¿Por qué el resultado no coincide con lo que dice mi bróker?</dt>
+          <dd>
+            Porque tu bróker no calcula para Hacienda española: no aplica FIFO con este criterio, no usa
+            los tipos de cambio del BCE, y no aplica la regla de los dos meses. Su informe está pensado
+            para otro país o para un resumen general, no para tu declaración.
+          </dd>
+        </div>
+        <div>
+          <dt>¿Qué pasa si tengo varios brókers?</dt>
+          <dd>
+            Si sus ficheros tienen columnas parecidas, puedes subirlos todos a la vez: se fusionan por
+            ISIN antes de calcular, tal y como exige el FIFO (Hacienda no distingue en qué bróker tenías
+            las acciones). Si los formatos son muy distintos, calcula cada uno por separado sabiendo que
+            el resultado de un valor solo será exacto si no lo tienes repartido entre varios brókers a
+            la vez.
+          </dd>
+        </div>
+        <div>
+          <dt>¿Esto sustituye a un asesor fiscal o gestoría?</dt>
+          <dd>
+            No. Es una ayuda de cálculo para llegar a la declaración con los números ya hechos, no
+            asesoramiento fiscal. Revisa el resultado y, en casos complejos o dudosos, consulta con un
+            profesional.
+          </dd>
+        </div>
+      </dl>
+    </div>
+  </details>
+
 </main>
 
 <footer class="pie">
-  <p>Sin servidor, sin cuentas, sin cookies de seguimiento. Código abierto.</p>
+  <p>Sin servidor, sin cuentas, sin cookies de seguimiento.
+     Código abierto en <a href="https://github.com/aaroncalvet6-oss/aca-agency" target="_blank" rel="noopener">GitHub</a>.</p>
 </footer>
 
 <script src="https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js"></script>

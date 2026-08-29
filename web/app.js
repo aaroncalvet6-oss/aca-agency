@@ -66,6 +66,10 @@ def _resumen_dividendos_multi(dividendos_por_valor):
     }
 
 
+def _anios_de_dividendos(dividendos_por_valor):
+    return {d["fecha"].split("/")[-1] for divs in dividendos_por_valor.values() for d in divs}
+
+
 def procesar_csvs_multi(ficheros, mapeo, tipos=None):
     resultado = {
         "frescura_bce": motor_web.info_frescura_bce(),
@@ -73,6 +77,7 @@ def procesar_csvs_multi(ficheros, mapeo, tipos=None):
         "avisos_lectura": [],
         "valores": {},
         "dividendos": None,
+        "ejercicio_fiscal": [],
         "totales": {"ganancia_patrimonial": None, "completo": True, "motivo": None},
     }
 
@@ -110,10 +115,15 @@ def procesar_csvs_multi(ficheros, mapeo, tipos=None):
             "El fichero no tiene ninguna compra o venta que calcular."
         )
         resultado["dividendos"] = _resumen_dividendos_multi(dividendos_por_valor_total)
+        resultado["ejercicio_fiscal"] = sorted(_anios_de_dividendos(dividendos_por_valor_total))
         return resultado
 
     ganancia_total = Decimal("0")
     algun_error = False
+    # El ejercicio fiscal lo marca la fecha de la VENTA (o del dividendo si
+    # no hay ventas): una compra sin vender todavia no genera nada que
+    # declarar este año, asi que no cuenta para decidir el ejercicio.
+    anios_declarables = _anios_de_dividendos(dividendos_por_valor_total)
 
     for valor, operaciones in operaciones_por_valor_total.items():
         try:
@@ -127,6 +137,7 @@ def procesar_csvs_multi(ficheros, mapeo, tipos=None):
             continue
 
         ganancia_total += ganancia
+        anios_declarables.update(fila["fecha"].split("/")[-1] for fila in detalle_ventas)
         resultado["valores"][valor] = {
             "error": None,
             "ganancia": _dinero_multi(ganancia),
@@ -145,6 +156,7 @@ def procesar_csvs_multi(ficheros, mapeo, tipos=None):
         }
 
     resultado["dividendos"] = _resumen_dividendos_multi(dividendos_por_valor_total)
+    resultado["ejercicio_fiscal"] = sorted(anios_declarables)
 
     resultado["totales"]["completo"] = not algun_error
     resultado["totales"]["ganancia_patrimonial"] = None if algun_error else _dinero_multi(ganancia_total)
@@ -181,6 +193,12 @@ function formatoDinero(cadena) {
   const [entero, decimales] = cadena.replace("-", "").split(".");
   const enteroConMiles = entero.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
   return `${negativo ? "-" : ""}${enteroConMiles},${decimales || "00"} €`;
+}
+
+// Las cantidades de acciones (p.ej. "0.30") vienen de Python con el punto
+// decimal de Decimal: en la página TODO se lee con coma, sin excepción.
+function formatoCantidad(cadena) {
+  return cadena.replace(".", ",");
 }
 
 // --- Progreso de los 3 pasos ---------------------------------------------
@@ -781,6 +799,7 @@ function calcular() {
 
 function pintarResultado(resultado) {
   pintarTotales(resultado);
+  pintarDondeVaEsto(resultado);
   pintarAvisos(resultado.avisos_lectura);
   pintarDividendos(resultado.dividendos);
   pintarValores(resultado.valores);
@@ -789,17 +808,24 @@ function pintarResultado(resultado) {
   el("boton-descargar").classList.toggle("oculto", !hayAlgoQueDescargar);
 }
 
+function etiquetaEjercicio(anios) {
+  if (!anios || anios.length === 0) return "";
+  return anios.length === 1 ? `Ejercicio fiscal ${anios[0]}` : `Ejercicios fiscales ${anios.join(" y ")}`;
+}
+
 function pintarTotales(resultado) {
   const contenedor = el("totales");
   const { completo, ganancia_patrimonial, motivo } = resultado.totales;
+  const eyebrow = etiquetaEjercicio(resultado.ejercicio_fiscal);
 
   if (completo) {
     const negativo = ganancia_patrimonial.trim().startsWith("-");
     const clase = negativo ? "perdida" : "ganancia";
-    const etiqueta = negativo ? "Pérdida" : "Ganancia";
+    const etiqueta = negativo ? "Pérdida patrimonial" : "Ganancia patrimonial";
     contenedor.innerHTML = `
-      <p class="total-etiqueta">Ganancia patrimonial total</p>
-      <p class="total-principal ${clase}"><span class="total-etiqueta-signo">${etiqueta}</span>${formatoDinero(ganancia_patrimonial)}</p>
+      ${eyebrow ? `<p class="total-eyebrow">${eyebrow}</p>` : ""}
+      <span class="chip-resultado ${clase}">${etiqueta}</span>
+      <p class="cifra-hero ${clase}">${formatoDinero(ganancia_patrimonial)}</p>
       <p class="total-secundario">Suma del FIFO de todos los valores del fichero, ya aplicada la regla de los 2 meses.</p>
     `;
   } else {
@@ -807,11 +833,46 @@ function pintarTotales(resultado) {
     // "completo" es que no hay un total fiable que mostrar, y un numero
     // con pinta de valido induciria a pensar que ya esta calculado.
     contenedor.innerHTML = `
-      <p class="total-etiqueta">Ganancia patrimonial total</p>
-      <p class="total-principal no-calculable">No se ha podido calcular</p>
+      ${eyebrow ? `<p class="total-eyebrow">${eyebrow}</p>` : ""}
+      <span class="chip-resultado no-calculable">Sin calcular</span>
+      <p class="cifra-hero no-calculable">No se ha podido calcular</p>
       <p class="total-secundario">${escaparHtml(motivo || "Revisa los avisos y el detalle de cada valor más abajo.")}</p>
     `;
   }
+}
+
+// Lo que le importa al usuario después del número: en qué apartado de la
+// declaración va. Deliberadamente sin números de casilla: cambian cada
+// campaña y esta herramienta no los tiene verificados, así que describimos
+// el apartado en palabras y remitimos al borrador o a una gestoría.
+function pintarDondeVaEsto(resultado) {
+  const contenedor = el("donde-va-esto");
+  if (!resultado.totales.completo) { ocultar(contenedor); return; }
+
+  const hayDividendos = resultado.dividendos && Object.keys(resultado.dividendos.por_valor).length > 0;
+
+  contenedor.innerHTML = `
+    <h2>Dónde va esto en tu declaración</h2>
+    <dl class="lista-apartados">
+      <div>
+        <dt>Ganancias y pérdidas patrimoniales</dt>
+        <dd>El resultado de vender acciones, participaciones o ETFs se declara como ganancia o pérdida
+        patrimonial, dentro de la base imponible del ahorro (Modelo 100 de la renta).</dd>
+      </div>
+      ${hayDividendos ? `
+      <div>
+        <dt>Dividendos</dt>
+        <dd>Son rendimiento del capital mobiliario, no ganancia patrimonial: van en un apartado distinto,
+        también dentro de la base imponible del ahorro, con su propia retención.</dd>
+      </div>` : ""}
+    </dl>
+    <div class="aviso aviso-info">
+      No indicamos el número exacto de casilla: cambia de una campaña a otra y esta herramienta no lo
+      tiene verificado. Comprueba la casilla concreta en el borrador de Hacienda o con una gestoría antes
+      de presentar.
+    </div>
+  `;
+  mostrar(contenedor);
 }
 
 function pintarAvisos(avisos) {
@@ -874,11 +935,11 @@ function pintarValores(valores) {
     `).join("");
 
     const lotesPendientes = datos.lotes_pendientes.length
-      ? `<ul class="lista-lotes">${datos.lotes_pendientes.map((l) => `<li>${l.acciones} ud. del ${l.fecha}</li>`).join("")}</ul>`
+      ? `<ul class="lista-lotes">${datos.lotes_pendientes.map((l) => `<li>${formatoCantidad(l.acciones)} ud. del ${l.fecha}</li>`).join("")}</ul>`
       : "";
 
     bloque.innerHTML = `
-      <h3><span>${escaparHtml(valor)}</span><span class="cifra-valor ${negativo ? "perdida" : "ganancia"}">${formatoDinero(datos.ganancia)}</span></h3>
+      <h3><span class="nombre-valor">${escaparHtml(valor)}</span><span class="cifra-valor ${negativo ? "perdida" : "ganancia"}">${formatoDinero(datos.ganancia)}</span></h3>
       ${datos.desglose.length ? `
         <div class="tabla-scroll">
           <table class="tabla-desglose tabla-desglose-ventas">
@@ -886,7 +947,11 @@ function pintarValores(valores) {
             <tbody>${filasDesglose}</tbody>
           </table>
         </div>` : `<p class="total-secundario">Sin ventas en este fichero.</p>`}
-      ${lotesPendientes ? `<p class="total-secundario">Quedan sin vender:</p>${lotesPendientes}` : ""}
+      ${lotesPendientes ? `
+        <p class="lotes-pendientes-nota">
+          Quedan sin vender — siguen en tu cartera, no generan ganancia ahora, y su coste (ya ajustado
+          por la regla de los 2 meses si aplica) es el que se usará cuando las vendas:
+        </p>${lotesPendientes}` : ""}
     `;
     contenedor.appendChild(bloque);
   }
