@@ -3,9 +3,9 @@
 /* Calculadora FIFO para la renta — todo se ejecuta en este navegador.
  * Pyodide (Python compilado a WebAssembly) corre el mismo motor probado
  * con tests en Python (calculadora.py / tipos_cambio.py / lector_csv.py /
- * motor_web.py). El fichero del usuario NUNCA se sube a ningún sitio:
- * se lee con el File API del navegador y se pasa como texto a Python,
- * todo dentro de esta pestaña.
+ * motor_web.py, sin modificar ni uno). El fichero del usuario NUNCA se
+ * sube a ningún sitio: se lee con el File API del navegador y se pasa
+ * como texto a Python, todo dentro de esta pestaña.
  */
 
 const FICHEROS_MOTOR = [
@@ -16,8 +16,6 @@ const FICHEROS_MOTOR = [
   "presets_broker.json",
 ];
 const RUTA_CACHE_BCE = "cache/eurofxref-hist.xml";
-const CLAVE_LOCALSTORAGE_PRESETS = "fifo-renta:presets_broker";
-const PREFIJO_LOCALSTORAGE_MAPEO = "fifo-renta:mapeo:";
 
 const CAMPOS_OBLIGATORIOS = ["fecha", "tipo", "valor", "cantidad", "precio"];
 const CAMPOS_OPCIONALES = ["divisa", "comision"];
@@ -31,11 +29,138 @@ const ETIQUETAS_CAMPO = {
   comision: "Comisión (opcional, si falta se asume 0)",
 };
 
+const CLAVE_LOCALSTORAGE_PRESETS = "fifo-renta:presets_broker";
+const PREFIJO_LOCALSTORAGE_MAPEO = "fifo-renta:mapeo:";
+
+// Orquestador para varios ficheros del mismo ejercicio (Trade Republic, p.ej.,
+// separa el informe por el periodo con IBAN alemán y el periodo con IBAN
+// español). NO modifica motor_web.py ni ningún otro fichero del motor
+// probado con tests: es una capa aparte, ejecutada solo en Pyodide, que
+// reutiliza exactamente las mismas funciones ya testeadas para juntar las
+// operaciones de todos los ficheros POR VALOR antes de pasarlas por el
+// FIFO (una compra en un fichero y su venta en otro tienen que liquidarse
+// juntas; tratar cada fichero por separado rompería el FIFO real).
+const CODIGO_ORQUESTADOR_MULTIARCHIVO = `
+import contextlib
+import io
+from decimal import Decimal
+
+import lector_csv
+import motor_web
+from calculadora import calcular_desglose
+
+
+def _dinero_multi(valor):
+    return str(valor.quantize(Decimal("0.01")))
+
+
+def _resumen_dividendos_multi(dividendos_por_valor):
+    resumen = lector_csv.resumir_dividendos(dividendos_por_valor)
+    return {
+        "bruto_total": _dinero_multi(resumen["bruto_total"]),
+        "retencion_total": _dinero_multi(resumen["retencion_total"]),
+        "por_valor": {
+            valor: {"bruto": _dinero_multi(d["bruto"]), "retencion": _dinero_multi(d["retencion"])}
+            for valor, d in resumen["por_valor"].items()
+        },
+    }
+
+
+def procesar_csvs_multi(ficheros, mapeo, tipos=None):
+    resultado = {
+        "frescura_bce": motor_web.info_frescura_bce(),
+        "error_lectura": None,
+        "avisos_lectura": [],
+        "valores": {},
+        "dividendos": None,
+        "totales": {"ganancia_patrimonial": None, "completo": True, "motivo": None},
+    }
+
+    varios = len(ficheros) > 1
+    operaciones_por_valor_total = {}
+    dividendos_por_valor_total = {}
+    avisos_total = []
+
+    for nombre, contenido in ficheros:
+        try:
+            ops, divs, avisos = lector_csv.leer_operaciones(contenido=contenido, mapeo=mapeo, tipos=tipos)
+        except lector_csv.ErrorLectorCSV as error:
+            mensaje = f"{nombre}: {error}" if varios else str(error)
+            resultado["error_lectura"] = mensaje
+            resultado["totales"]["completo"] = False
+            resultado["totales"]["motivo"] = mensaje
+            return resultado
+
+        prefijo = f"{nombre} - " if varios else ""
+        avisos_total.extend(f"{prefijo}{aviso}" for aviso in avisos)
+
+        for valor, ops_valor in ops.items():
+            operaciones_por_valor_total.setdefault(valor, []).extend(ops_valor)
+        for valor, divs_valor in divs.items():
+            dividendos_por_valor_total.setdefault(valor, []).extend(divs_valor)
+
+    resultado["avisos_lectura"] = avisos_total
+
+    if not operaciones_por_valor_total:
+        resultado["totales"]["completo"] = False
+        resultado["totales"]["motivo"] = (
+            "No se ha podido leer ninguna compra o venta de este fichero "
+            f"({len(avisos_total)} fila(s) ignorada(s)); revisa el mapeo de columnas."
+            if avisos_total else
+            "El fichero no tiene ninguna compra o venta que calcular."
+        )
+        resultado["dividendos"] = _resumen_dividendos_multi(dividendos_por_valor_total)
+        return resultado
+
+    ganancia_total = Decimal("0")
+    algun_error = False
+
+    for valor, operaciones in operaciones_por_valor_total.items():
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                ganancia, lotes_finales, detalle_ventas = calcular_desglose(operaciones)
+        except Exception as error:
+            algun_error = True
+            resultado["valores"][valor] = {
+                "error": str(error), "ganancia": None, "desglose": None, "lotes_pendientes": None,
+            }
+            continue
+
+        ganancia_total += ganancia
+        resultado["valores"][valor] = {
+            "error": None,
+            "ganancia": _dinero_multi(ganancia),
+            "desglose": [
+                {
+                    "fecha": fila["fecha"],
+                    "resultado_bruto": _dinero_multi(fila["resultado_bruto"]),
+                    "bloqueado": _dinero_multi(fila["bloqueado"]),
+                    "resultado_declarado": _dinero_multi(fila["resultado_declarado"]),
+                }
+                for fila in detalle_ventas
+            ],
+            "lotes_pendientes": [
+                {"fecha": lote["fecha"], "acciones": str(lote["acciones"])} for lote in lotes_finales
+            ],
+        }
+
+    resultado["dividendos"] = _resumen_dividendos_multi(dividendos_por_valor_total)
+
+    resultado["totales"]["completo"] = not algun_error
+    resultado["totales"]["ganancia_patrimonial"] = None if algun_error else _dinero_multi(ganancia_total)
+    if algun_error:
+        n_errores = sum(1 for v in resultado["valores"].values() if v["error"])
+        resultado["totales"]["motivo"] = f"{n_errores} valor(es) no se han podido calcular (mira el detalle de cada uno)."
+
+    return resultado
+`;
+
 let pyodide = null;
 let lectorCsv = null;
 let motorWeb = null;
+let procesarCsvsMulti = null;
 let bceDisponible = false;
-let textoCsvActual = null;
+let ficherosActuales = [];   // [{nombre, tamano, texto}, ...]
 let cabecerasActuales = [];
 let ultimoResultado = null;
 
@@ -48,6 +173,27 @@ function escaparHtml(texto) {
   const div = document.createElement("div");
   div.textContent = texto;
   return div.innerHTML;
+}
+
+// "-40.80" -> "-40,80 €" ; "1234.5" -> "1.234,50 €"
+function formatoDinero(cadena) {
+  const negativo = cadena.trim().startsWith("-");
+  const [entero, decimales] = cadena.replace("-", "").split(".");
+  const enteroConMiles = entero.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+  return `${negativo ? "-" : ""}${enteroConMiles},${decimales || "00"} €`;
+}
+
+// --- Progreso de los 3 pasos ---------------------------------------------
+
+const ORDEN_PASO = { carga: 1, mapeo: 2, resultado: 3 };
+
+function actualizarPasos(pasoActivo) {
+  for (const [nombre, numero] of Object.entries(ORDEN_PASO)) {
+    const li = el(`paso-nav-${numero}`);
+    li.classList.remove("paso-activo", "paso-completo");
+    if (nombre === pasoActivo) li.classList.add("paso-activo");
+    else if (numero < ORDEN_PASO[pasoActivo]) li.classList.add("paso-completo");
+  }
 }
 
 // --- Arranque -----------------------------------------------------------
@@ -68,7 +214,9 @@ async function iniciar() {
   if (!motorListo) return;   // sin Python no hay nada que hacer
 
   mostrar(el("zona-carga"));
+  actualizarPasos("carga");
   configurarZonaCarga();
+  configurarBotones();
 
   await cargarTiposBCE();
 }
@@ -93,6 +241,9 @@ async function cargarMotor() {
 
     lectorCsv = pyodide.pyimport("lector_csv");
     motorWeb = pyodide.pyimport("motor_web");
+
+    pyodide.runPython(CODIGO_ORQUESTADOR_MULTIARCHIVO);
+    procesarCsvsMulti = pyodide.globals.get("procesar_csvs_multi");
 
     el("estado-motor-texto").textContent = "Motor de cálculo listo.";
     ocultar(el("estado-motor"));
@@ -132,6 +283,35 @@ async function cargarTiposBCE() {
   }
 }
 
+function mostrarFrescuraBCE() {
+  const infoPy = motorWeb.info_frescura_bce();
+  const info = infoPy.toJs({ dict_converter: Object.fromEntries });
+  infoPy.destroy();
+
+  const contenedor = el("frescura-bce");
+  mostrar(contenedor);
+
+  if (!info.ok) {
+    contenedor.classList.add("desactualizado");
+    contenedor.textContent = `No se ha podido comprobar la fecha de los tipos de cambio del BCE: ${info.error}`;
+    return;
+  }
+
+  let texto = `Tipos del BCE actualizados hasta el ${info.fecha_mas_reciente}.`;
+  if (info.desactualizado) {
+    contenedor.classList.add("desactualizado");
+    texto += ` Este dato tiene ${info.dias_de_antiguedad} días — puede que las operaciones más recientes no se puedan calcular todavía.`;
+  }
+  contenedor.textContent = texto;
+}
+
+// --- Presets: persistencia en localStorage --------------------------------
+//
+// Pyodide corre en un filesystem en memoria (MEMFS) que se pierde al
+// recargar la página. Para que "guardar un preset" sea de verdad
+// duradero, el contenido de presets_broker.json se copia a localStorage
+// cada vez que cambia, y se restaura desde ahí al arrancar.
+
 async function cargarPresetsIniciales() {
   try {
     const guardado = localStorage.getItem(CLAVE_LOCALSTORAGE_PRESETS);
@@ -152,13 +332,7 @@ function guardarPresetsEnLocalStorage() {
   }
 }
 
-// --- Recordar el ultimo mapeo usado para unas mismas cabeceras ---------
-//
-// Ademas de los presets con nombre (guardados explicitamente), se recuerda
-// sin que el usuario tenga que hacer nada el ultimo mapeo que funciono
-// para un fichero con exactamente estas cabeceras (mismo nombre de
-// columnas, en cualquier orden), para no obligar a repetirlo si se sube
-// otro extracto del mismo broker.
+// --- Recordar el último mapeo usado para unas mismas cabeceras -----------
 
 function claveMapeoLocal(cabeceras) {
   const huella = [...cabeceras].map((c) => c.trim().toLowerCase()).sort().join("||");
@@ -183,29 +357,7 @@ function mapeoRecordadoLocal(cabeceras) {
   }
 }
 
-function mostrarFrescuraBCE() {
-  const infoPy = motorWeb.info_frescura_bce();
-  const info = infoPy.toJs({ dict_converter: Object.fromEntries });
-  infoPy.destroy();
-
-  const contenedor = el("frescura-bce");
-  mostrar(contenedor);
-
-  if (!info.ok) {
-    contenedor.classList.add("desactualizado");
-    contenedor.textContent = `No se ha podido comprobar la fecha de los tipos de cambio del BCE: ${info.error}`;
-    return;
-  }
-
-  let texto = `Tipos del BCE actualizados hasta el ${info.fecha_mas_reciente}.`;
-  if (info.desactualizado) {
-    contenedor.classList.add("desactualizado");
-    texto += ` Este dato tiene ${info.dias_de_antiguedad} días — puede que las operaciones más recientes no se puedan calcular todavía.`;
-  }
-  contenedor.textContent = texto;
-}
-
-// --- Paso 1: arrastrar / elegir el CSV ---------------------------------
+// --- Paso 1: elegir uno o varios CSV --------------------------------------
 
 function configurarZonaCarga() {
   const zonaDrop = el("zona-drop");
@@ -229,38 +381,88 @@ function configurarZonaCarga() {
     })
   );
   zonaDrop.addEventListener("drop", (evento) => {
-    const fichero = evento.dataTransfer.files[0];
-    if (fichero) cargarFichero(fichero);
+    const csv = [...evento.dataTransfer.files].filter((f) => f.name.toLowerCase().endsWith(".csv"));
+    if (csv.length) cargarFicheros(csv);
   });
 
   inputFichero.addEventListener("change", (evento) => {
-    const fichero = evento.target.files[0];
-    if (fichero) cargarFichero(fichero);
+    if (evento.target.files.length) cargarFicheros(evento.target.files);
+    inputFichero.value = "";   // permite volver a elegir el mismo fichero si se ha quitado
   });
 }
 
-function cargarFichero(fichero) {
+function leerFicheroComoTexto(fichero) {
+  return new Promise((resolve, reject) => {
+    const lector = new FileReader();
+    lector.onload = () => resolve(lector.result);
+    lector.onerror = () => reject(new Error(`No se ha podido leer "${fichero.name}"`));
+    lector.readAsText(fichero);
+  });
+}
+
+async function cargarFicheros(ficheros) {
   ocultarError();
   ocultar(el("zona-resultado"));
 
-  const lector = new FileReader();
-  lector.onload = () => {
-    textoCsvActual = lector.result;
-    const nombreFichero = el("nombre-fichero");
-    nombreFichero.textContent = `Fichero cargado: ${fichero.name} (${fichero.size.toLocaleString("es-ES")} bytes) — no se ha subido a ningún sitio.`;
-    mostrar(nombreFichero);
-    detectarYPreparearMapeo();
-  };
-  lector.onerror = () => mostrarError("No se ha podido leer el fichero. Prueba a exportarlo de nuevo desde tu bróker.");
-  lector.readAsText(fichero);
+  try {
+    ficherosActuales = await Promise.all([...ficheros].map(async (fichero) => ({
+      nombre: fichero.name,
+      tamano: fichero.size,
+      texto: await leerFicheroComoTexto(fichero),
+    })));
+  } catch (error) {
+    mostrarError(error.message || "No se ha podido leer el fichero. Prueba a exportarlo de nuevo desde tu bróker.");
+    return;
+  }
+
+  pintarListaFicheros();
+  detectarYPreparearMapeo();
 }
 
-// --- Paso 2: detectar cabeceras y mapear columnas ----------------------
+function pintarListaFicheros() {
+  const lista = el("lista-ficheros");
+  lista.innerHTML = "";
+
+  if (ficherosActuales.length === 0) {
+    ocultar(lista);
+    ocultar(el("nota-sin-subida"));
+    return;
+  }
+
+  ficherosActuales.forEach((fichero, indice) => {
+    const li = document.createElement("li");
+    li.innerHTML = `
+      <span class="nombre-fichero-info">${escaparHtml(fichero.nombre)} — ${fichero.tamano.toLocaleString("es-ES")} bytes</span>
+      <button type="button" class="quitar-fichero" data-indice="${indice}">Quitar</button>
+    `;
+    lista.appendChild(li);
+  });
+
+  lista.querySelectorAll(".quitar-fichero").forEach((boton) => {
+    boton.addEventListener("click", () => {
+      ficherosActuales.splice(Number(boton.dataset.indice), 1);
+      pintarListaFicheros();
+      if (ficherosActuales.length === 0) {
+        ocultar(el("zona-mapeo"));
+        ocultar(el("boton-calcular"));
+        ocultar(el("zona-resultado"));
+      } else {
+        detectarYPreparearMapeo();
+      }
+    });
+  });
+
+  mostrar(lista);
+  mostrar(el("nota-sin-subida"));
+}
+
+// --- Paso 2: detectar cabeceras y mapear columnas -------------------------
 
 function detectarYPreparearMapeo() {
+  const primerFichero = ficherosActuales[0];
   let resultado;
   try {
-    const resultadoPy = lectorCsv.detectar_csv.callKwargs({ contenido: textoCsvActual });
+    const resultadoPy = lectorCsv.detectar_csv.callKwargs({ contenido: primerFichero.texto });
     resultado = resultadoPy.toJs();
     resultadoPy.destroy();
   } catch (error) {
@@ -277,16 +479,20 @@ function detectarYPreparearMapeo() {
   aplicarAutoDeteccion(cabeceras);
 
   mostrar(el("zona-mapeo"));
-  actualizarBotonCalcular();
+  mostrar(el("boton-calcular"));
+  actualizarPasos("mapeo");
 }
 
 // Encuentra el mapeo de columnas sin que el usuario tenga que elegirlas a
 // mano, probando por este orden (el primero que encaja gana):
 //   1. Un mapeo recordado de un fichero anterior con las mismas cabeceras.
-//   2. Un preset guardado (con nombre) cuyas columnas existan todas aqui.
+//   2. Un preset guardado (con nombre) cuyas columnas existan todas aquí.
 //   3. Adivinar cada campo por el nombre de su cabecera (sugerir_mapeo),
-//      tolerando mayusculas/acentos/sinonimos habituales. Puede acertar
+//      tolerando mayúsculas/acentos/sinónimos habituales. Puede acertar
 //      solo alguno de los campos: el resto se deja para elegir a mano.
+// Si con esto quedan todos los campos obligatorios cubiertos, el paso 2
+// se deja PLEGADO (el usuario solo lo abre si quiere revisar algo); si
+// falta alguno, se abre solo y se señala qué falta.
 function aplicarAutoDeteccion(cabeceras) {
   const avisoPreset = el("preset-sugerido");
   const avisoAuto = el("mapeo-auto-detectado");
@@ -298,32 +504,38 @@ function aplicarAutoDeteccion(cabeceras) {
     aplicarMapeoAlFormulario(recordado);
     avisoAuto.textContent = "Hemos recordado el mapeo que usaste la última vez con estas mismas cabeceras. Puedes cambiar cualquier columna si no es correcto.";
     mostrar(avisoAuto);
-    return;
+  } else {
+    const cabecerasSet = new Set(cabeceras);
+    const presetQueEncaja = obtenerPresets().find((preset) =>
+      Object.values(preset.mapeo).every((columna) => cabecerasSet.has(columna))
+    );
+    if (presetQueEncaja) {
+      aplicarMapeoAlFormulario(presetQueEncaja.mapeo);
+      avisoPreset.textContent = `Este fichero encaja con el preset "${presetQueEncaja.nombre}": lo hemos preseleccionado. Puedes cambiar cualquier columna si no es correcto.`;
+      mostrar(avisoPreset);
+      setTimeout(() => { el("select-preset").value = presetQueEncaja.nombre; }, 0);
+    } else {
+      const sugerenciaPy = lectorCsv.sugerir_mapeo(pyodide.toPy(cabeceras));
+      const sugerencia = sugerenciaPy.toJs({ dict_converter: Object.fromEntries });
+      sugerenciaPy.destroy();
+
+      const nDetectados = Object.keys(sugerencia).length;
+      if (nDetectados > 0) {
+        aplicarMapeoAlFormulario(sugerencia);
+        const totalCampos = CAMPOS_OBLIGATORIOS.length + CAMPOS_OPCIONALES.length;
+        avisoAuto.textContent = `Hemos detectado automáticamente ${nDetectados} de ${totalCampos} columnas por el nombre de la cabecera. Revisa y completa el resto.`;
+        mostrar(avisoAuto);
+      }
+    }
   }
 
-  const cabecerasSet = new Set(cabeceras);
-  const presetQueEncaja = obtenerPresets().find((preset) =>
-    Object.values(preset.mapeo).every((columna) => cabecerasSet.has(columna))
-  );
-  if (presetQueEncaja) {
-    aplicarMapeoAlFormulario(presetQueEncaja.mapeo);
-    avisoPreset.textContent = `Este fichero encaja con el preset "${presetQueEncaja.nombre}": lo hemos preseleccionado. Puedes cambiar cualquier columna si no es correcto.`;
-    mostrar(avisoPreset);
-    setTimeout(() => { el("select-preset").value = presetQueEncaja.nombre; }, 0);
-    return;
-  }
+  actualizarEstadoMapeo();
+  actualizarResumenMapeoTexto();
 
-  const sugerenciaPy = lectorCsv.sugerir_mapeo(pyodide.toPy(cabeceras));
-  const sugerencia = sugerenciaPy.toJs({ dict_converter: Object.fromEntries });
-  sugerenciaPy.destroy();
-
-  const nDetectados = Object.keys(sugerencia).length;
-  if (nDetectados > 0) {
-    aplicarMapeoAlFormulario(sugerencia);
-    const totalCampos = CAMPOS_OBLIGATORIOS.length + CAMPOS_OPCIONALES.length;
-    avisoAuto.textContent = `Hemos detectado automáticamente ${nDetectados} de ${totalCampos} columnas por el nombre de la cabecera. Revisa y completa el resto.`;
-    mostrar(avisoAuto);
-  }
+  // Solo la deteccion inicial decide si el paso se abre o se pliega; una
+  // vez el usuario lo ha tocado, que se quede como el navegador lo deje.
+  const faltanObligatorios = CAMPOS_OBLIGATORIOS.some((campo) => !el(`mapeo-${campo}`).value);
+  el("zona-mapeo").open = faltanObligatorios;
 }
 
 function pintarTablaMapeo(cabeceras) {
@@ -335,7 +547,8 @@ function pintarTablaMapeo(cabeceras) {
     const fila = document.createElement("tr");
 
     const celdaEtiqueta = document.createElement("td");
-    celdaEtiqueta.textContent = ETIQUETAS_CAMPO[campo] + (CAMPOS_OBLIGATORIOS.includes(campo) ? " *" : "");
+    celdaEtiqueta.innerHTML = ETIQUETAS_CAMPO[campo] +
+      (CAMPOS_OBLIGATORIOS.includes(campo) ? ' <span class="campo-obligatorio-marca">*</span>' : "");
     fila.appendChild(celdaEtiqueta);
 
     const celdaSelect = document.createElement("td");
@@ -355,7 +568,10 @@ function pintarTablaMapeo(cabeceras) {
       select.appendChild(opcion);
     }
 
-    select.addEventListener("change", actualizarBotonCalcular);
+    select.addEventListener("change", () => {
+      actualizarEstadoMapeo();
+      actualizarResumenMapeoTexto();
+    });
     celdaSelect.appendChild(select);
     fila.appendChild(celdaSelect);
     cuerpo.appendChild(fila);
@@ -392,8 +608,7 @@ function obtenerPresets() {
 
   return nombres.map((nombre) => {
     const parPy = lectorCsv.cargar_preset(nombre);
-    const [mapeoPy] = parPy.toJs();
-    const mapeo = Object.fromEntries(mapeoPy);
+    const [mapeo] = parPy.toJs({ dict_converter: Object.fromEntries });
     parPy.destroy();
     return { nombre, mapeo };
   });
@@ -405,7 +620,6 @@ function aplicarMapeoAlFormulario(mapeo) {
     const columna = mapeo[campo] || "";
     select.value = cabecerasActuales.includes(columna) ? columna : "";
   }
-  actualizarBotonCalcular();
 }
 
 function pintarSelectorPresets() {
@@ -422,52 +636,110 @@ function pintarSelectorPresets() {
   select.onchange = () => {
     if (!select.value) return;
     const preset = obtenerPresets().find((p) => p.nombre === select.value);
-    if (preset) aplicarMapeoAlFormulario(preset.mapeo);
+    if (preset) {
+      aplicarMapeoAlFormulario(preset.mapeo);
+      actualizarEstadoMapeo();
+      actualizarResumenMapeoTexto();
+    }
   };
 }
 
+function valoresDelFormulario() {
+  const valores = {};
+  for (const campo of [...CAMPOS_OBLIGATORIOS, ...CAMPOS_OPCIONALES]) {
+    const valor = el(`mapeo-${campo}`).value;
+    if (valor) valores[campo] = valor;
+  }
+  return valores;
+}
+
+function columnasDuplicadas(mapeo) {
+  const porColumna = new Map();
+  for (const [campo, columna] of Object.entries(mapeo)) {
+    if (!porColumna.has(columna)) porColumna.set(columna, []);
+    porColumna.get(columna).push(campo);
+  }
+  return [...porColumna.entries()].filter(([, campos]) => campos.length > 1);
+}
+
 function leerMapeoDelFormulario() {
-  const mapeo = {};
-  for (const campo of CAMPOS_OBLIGATORIOS) {
-    const valor = el(`mapeo-${campo}`).value;
-    if (!valor) return null;
-    mapeo[campo] = valor;
-  }
-  for (const campo of CAMPOS_OPCIONALES) {
-    const valor = el(`mapeo-${campo}`).value;
-    if (valor) mapeo[campo] = valor;   // si no se elige, NO se incluye la clave (valor por defecto en Python)
-  }
-  return mapeo;
+  const valores = valoresDelFormulario();
+  if (CAMPOS_OBLIGATORIOS.some((campo) => !valores[campo])) return null;
+  if (columnasDuplicadas(valores).length > 0) return null;
+  return valores;
 }
 
-function actualizarBotonCalcular() {
-  el("boton-calcular").disabled = leerMapeoDelFormulario() === null;
-}
+// Valida en vivo (sin esperar a pulsar "Calcular"): columnas duplicadas o
+// campos obligatorios sin cubrir bloquean el botón con un motivo claro.
+function actualizarEstadoMapeo() {
+  const avisoEl = el("mapeo-aviso");
+  const valores = valoresDelFormulario();
+  const duplicados = columnasDuplicadas(valores);
+  const faltan = CAMPOS_OBLIGATORIOS.filter((campo) => !valores[campo]);
 
-el("boton-calcular").addEventListener("click", calcular);
-
-el("boton-guardar-preset").addEventListener("click", () => {
-  ocultarError();
-  const nombre = el("input-nombre-preset").value.trim();
-  if (!nombre) { mostrarError("Escribe un nombre para guardar el preset."); return; }
-
-  const mapeo = leerMapeoDelFormulario();
-  if (!mapeo) { mostrarError("Completa antes las columnas obligatorias (*) para poder guardar el preset."); return; }
-
-  try {
-    lectorCsv.guardar_preset(nombre, pyodide.toPy(new Map(Object.entries(mapeo))));
-  } catch (error) {
-    mostrarError(`No se ha podido guardar el preset: ${mensajeDeErrorPython(error)}`);
+  if (duplicados.length > 0) {
+    const detalle = duplicados
+      .map(([columna, campos]) => `"${columna}" está asignada a la vez a ${campos.map((c) => ETIQUETAS_CAMPO[c]).join(" y ")}`)
+      .join("; ");
+    avisoEl.textContent = `No puedes usar la misma columna para dos campos: ${detalle}. Si tu fichero no tiene una columna propia para uno de ellos, esa operación no se puede calcular.`;
+    mostrar(avisoEl);
+    el("boton-calcular").disabled = true;
     return;
   }
 
-  guardarPresetsEnLocalStorage();
-  el("input-nombre-preset").value = "";
-  pintarSelectorPresets();
-  el("select-preset").value = nombre;
-});
+  if (faltan.length > 0) {
+    avisoEl.textContent = `Tu fichero no tiene (o no has indicado) columna para: ${faltan.map((c) => ETIQUETAS_CAMPO[c]).join(", ")}. No se puede calcular sin eso.`;
+    mostrar(avisoEl);
+    el("boton-calcular").disabled = true;
+    return;
+  }
 
-// --- Paso 3: calcular y mostrar resultados -----------------------------
+  ocultar(avisoEl);
+  el("boton-calcular").disabled = false;
+}
+
+function actualizarResumenMapeoTexto() {
+  const todosLosCampos = [...CAMPOS_OBLIGATORIOS, ...CAMPOS_OPCIONALES];
+  const valores = valoresDelFormulario();
+  const nMapeados = Object.keys(valores).length;
+  const faltanObligatorios = CAMPOS_OBLIGATORIOS.filter((campo) => !valores[campo]);
+
+  const texto = el("resumen-mapeo-texto");
+  if (faltanObligatorios.length > 0) {
+    texto.textContent = `Falta indicar: ${faltanObligatorios.map((c) => ETIQUETAS_CAMPO[c]).join(", ")}`;
+  } else {
+    texto.textContent = `${nMapeados} de ${todosLosCampos.length} columnas detectadas — revisar`;
+  }
+}
+
+function configurarBotones() {
+  el("boton-calcular").addEventListener("click", calcular);
+
+  el("boton-guardar-preset").addEventListener("click", () => {
+    ocultarError();
+    const nombre = el("input-nombre-preset").value.trim();
+    if (!nombre) { mostrarError("Escribe un nombre para guardar el preset."); return; }
+
+    const mapeo = leerMapeoDelFormulario();
+    if (!mapeo) { mostrarError("Completa antes las columnas obligatorias (*) para poder guardar el preset."); return; }
+
+    try {
+      lectorCsv.guardar_preset(nombre, pyodide.toPy(new Map(Object.entries(mapeo))));
+    } catch (error) {
+      mostrarError(`No se ha podido guardar el preset: ${mensajeDeErrorPython(error)}`);
+      return;
+    }
+
+    guardarPresetsEnLocalStorage();
+    el("input-nombre-preset").value = "";
+    pintarSelectorPresets();
+    el("select-preset").value = nombre;
+  });
+
+  el("boton-descargar").addEventListener("click", descargarDesgloseCSV);
+}
+
+// --- Paso 3: calcular y mostrar resultados -------------------------------
 
 function calcular() {
   ocultarError();
@@ -476,11 +748,13 @@ function calcular() {
 
   let resultado;
   try {
+    const ficherosPy = pyodide.toPy(ficherosActuales.map((f) => [f.nombre, f.texto]));
     const mapeoPy = pyodide.toPy(new Map(Object.entries(mapeo)));
-    const resultadoPy = motorWeb.procesar_csv(textoCsvActual, mapeoPy);
+    const resultadoPy = procesarCsvsMulti(ficherosPy, mapeoPy);
     resultado = resultadoPy.toJs({ dict_converter: Object.fromEntries });
     resultadoPy.destroy();
     mapeoPy.destroy();
+    ficherosPy.destroy();
   } catch (error) {
     mostrarError(`No se ha podido calcular: ${mensajeDeErrorPython(error)}`);
     return;
@@ -494,13 +768,15 @@ function calcular() {
     return;
   }
 
-  // El mapeo ha funcionado (aunque algun valor concreto falle despues por
+  // El mapeo ha funcionado (aunque algún valor concreto falle después por
   // otro motivo, p.ej. tipo de cambio no disponible): lo recordamos para
   // no obligar a repetirlo si se sube otro fichero con estas cabeceras.
   recordarMapeoLocal(cabecerasActuales, mapeo);
 
   pintarResultado(resultado);
   mostrar(el("zona-resultado"));
+  actualizarPasos("resultado");
+  el("zona-resultado").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 function pintarResultado(resultado) {
@@ -519,18 +795,20 @@ function pintarTotales(resultado) {
 
   if (completo) {
     const negativo = ganancia_patrimonial.trim().startsWith("-");
+    const clase = negativo ? "perdida" : "ganancia";
+    const etiqueta = negativo ? "Pérdida" : "Ganancia";
     contenedor.innerHTML = `
-      <h2>Ganancia patrimonial total</h2>
-      <p class="total-principal ${negativo ? "negativo" : ""}">${ganancia_patrimonial} €</p>
+      <p class="total-etiqueta">Ganancia patrimonial total</p>
+      <p class="total-principal ${clase}"><span class="total-etiqueta-signo">${etiqueta}</span>${formatoDinero(ganancia_patrimonial)}</p>
       <p class="total-secundario">Suma del FIFO de todos los valores del fichero, ya aplicada la regla de los 2 meses.</p>
     `;
   } else {
-    // Nunca se muestra un importe aqui (ni "0.00 €"): si no es
+    // Nunca se muestra un importe aqui (ni "0,00 €"): si no es
     // "completo" es que no hay un total fiable que mostrar, y un numero
     // con pinta de valido induciria a pensar que ya esta calculado.
     contenedor.innerHTML = `
-      <h2>Ganancia patrimonial total</h2>
-      <p class="total-principal">No se ha podido calcular</p>
+      <p class="total-etiqueta">Ganancia patrimonial total</p>
+      <p class="total-principal no-calculable">No se ha podido calcular</p>
       <p class="total-secundario">${escaparHtml(motivo || "Revisa los avisos y el detalle de cada valor más abajo.")}</p>
     `;
   }
@@ -550,17 +828,17 @@ function pintarDividendos(dividendos) {
   if (!dividendos || Object.keys(dividendos.por_valor).length === 0) { ocultar(contenedor); return; }
 
   const filasPorValor = Object.entries(dividendos.por_valor)
-    .map(([valor, d]) => `<tr><td>${escaparHtml(valor)}</td><td>${d.bruto} €</td><td>${d.retencion} €</td></tr>`)
+    .map(([valor, d]) => `<tr><td>${escaparHtml(valor)}</td><td>${formatoDinero(d.bruto)}</td><td>${formatoDinero(d.retencion)}</td></tr>`)
     .join("");
 
   contenedor.innerHTML = `
-    <h2>Dividendos (rendimiento del capital mobiliario)</h2>
-    <p class="total-secundario">Van en una casilla distinta de la renta a las ganancias patrimoniales.</p>
+    <h2>Dividendos</h2>
+    <p class="dividendos-nota">Rendimiento del capital mobiliario: van en una casilla distinta de la renta a las ganancias patrimoniales.</p>
     <div class="tabla-scroll">
       <table class="tabla-desglose">
         <thead><tr><th>Valor</th><th>Bruto</th><th>Retención</th></tr></thead>
         <tbody>${filasPorValor}</tbody>
-        <tfoot><tr><td><strong>Total</strong></td><td><strong>${dividendos.bruto_total} €</strong></td><td><strong>${dividendos.retencion_total} €</strong></td></tr></tfoot>
+        <tfoot><tr><td><strong>Total</strong></td><td><strong>${formatoDinero(dividendos.bruto_total)}</strong></td><td><strong>${formatoDinero(dividendos.retencion_total)}</strong></td></tr></tfoot>
       </table>
     </div>
   `;
@@ -584,21 +862,23 @@ function pintarValores(valores) {
       continue;
     }
 
+    const negativo = datos.ganancia.trim().startsWith("-");
+
     const filasDesglose = datos.desglose.map((op) => `
       <tr>
         <td>${op.fecha}</td>
-        <td>${op.resultado_bruto} €</td>
-        <td>${op.bloqueado} €</td>
-        <td>${op.resultado_declarado} €</td>
+        <td>${formatoDinero(op.resultado_bruto)}</td>
+        <td>${formatoDinero(op.bloqueado)}</td>
+        <td>${formatoDinero(op.resultado_declarado)}</td>
       </tr>
     `).join("");
 
     const lotesPendientes = datos.lotes_pendientes.length
-      ? `<p class="total-secundario">Quedan sin vender: ${datos.lotes_pendientes.map((l) => `${l.acciones} ud. del ${l.fecha}`).join(", ")}</p>`
+      ? `<ul class="lista-lotes">${datos.lotes_pendientes.map((l) => `<li>${l.acciones} ud. del ${l.fecha}</li>`).join("")}</ul>`
       : "";
 
     bloque.innerHTML = `
-      <h3><span>${escaparHtml(valor)}</span><span>${datos.ganancia} €</span></h3>
+      <h3><span>${escaparHtml(valor)}</span><span class="cifra-valor ${negativo ? "perdida" : "ganancia"}">${formatoDinero(datos.ganancia)}</span></h3>
       ${datos.desglose.length ? `
         <div class="tabla-scroll">
           <table class="tabla-desglose tabla-desglose-ventas">
@@ -606,15 +886,13 @@ function pintarValores(valores) {
             <tbody>${filasDesglose}</tbody>
           </table>
         </div>` : `<p class="total-secundario">Sin ventas en este fichero.</p>`}
-      ${lotesPendientes}
+      ${lotesPendientes ? `<p class="total-secundario">Quedan sin vender:</p>${lotesPendientes}` : ""}
     `;
     contenedor.appendChild(bloque);
   }
 }
 
-// --- Paso 4: descargar el desglose en CSV ------------------------------
-
-el("boton-descargar").addEventListener("click", descargarDesgloseCSV);
+// --- Paso 4: descargar el desglose en CSV --------------------------------
 
 function descargarDesgloseCSV() {
   if (!ultimoResultado) return;
@@ -645,7 +923,7 @@ function csvEscapar(valor) {
   return /[;"\n]/.test(texto) ? `"${texto.replace(/"/g, '""')}"` : texto;
 }
 
-// --- Utilidades ---------------------------------------------------------
+// --- Utilidades -----------------------------------------------------------
 
 function mensajeDeErrorPython(error) {
   // Los errores de Python que cruzan a JS via Pyodide traen el mensaje

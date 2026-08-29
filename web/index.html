@@ -4,91 +4,102 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Calculadora FIFO para la renta</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,500;8..60,600;8..60,700&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="estilo.css">
 </head>
 <body>
 
 <header class="cabecera">
+  <p class="ceja">Campaña de la renta</p>
   <h1>Calculadora FIFO para la renta</h1>
   <p class="subtitulo">FIFO, tipos de cambio oficiales del BCE y la regla de los 2 meses, a partir del extracto de tu bróker.</p>
+  <p class="franja-confianza">
+    <strong>Tu fichero no sale de este navegador.</strong>
+    Todo el cálculo ocurre aquí, con Python compilado a WebAssembly — no hay servidor de por medio.
+  </p>
 </header>
 
 <main>
 
-  <section class="aviso aviso-privacidad" aria-label="Privacidad">
-    <strong>Tu fichero nunca sale de este navegador.</strong>
-    Todo el cálculo se hace aquí mismo, con Python compilado a WebAssembly (Pyodide).
-    No hay servidor: nadie recibe tu extracto, ni siquiera nosotros. Puedes comprobarlo
-    tú mismo en la pestaña "Red" de las herramientas de desarrollador de tu navegador —
-    no verás ninguna subida del fichero.
-  </section>
+  <ol class="pasos" id="pasos" aria-label="Progreso">
+    <li id="paso-nav-1" data-paso="1"><span class="paso-numero">1</span><span class="paso-nombre">Extracto</span></li>
+    <li id="paso-nav-2" data-paso="2"><span class="paso-numero">2</span><span class="paso-nombre">Columnas</span></li>
+    <li id="paso-nav-3" data-paso="3"><span class="paso-numero">3</span><span class="paso-nombre">Resultado</span></li>
+  </ol>
 
-  <section class="aviso aviso-legal" aria-label="Aviso legal">
-    <strong>Esto es una ayuda de cálculo, no asesoramiento fiscal.</strong>
-    Revisa siempre el resultado antes de presentar tu declaración. En caso de duda,
-    consulta con un profesional.
-  </section>
-
-  <section id="estado-motor" class="estado-motor">
+  <section id="estado-motor" class="estado-motor" aria-live="polite">
     <span class="spinner" aria-hidden="true"></span>
-    <span id="estado-motor-texto">Cargando el motor de cálculo…</span>
+    <span id="estado-motor-texto">Cargando el motor de cálculo — unos segundos la primera vez…</span>
   </section>
 
   <section id="frescura-bce" class="frescura-bce oculto" aria-live="polite"></section>
 
-  <section id="zona-carga" class="tarjeta oculto">
-    <h2>1. Elige tu extracto</h2>
+  <section id="zona-carga" class="tarjeta oculto" aria-labelledby="titulo-paso-1">
+    <h2 id="titulo-paso-1"><span class="paso-etiqueta">Paso 1</span> Elige tu extracto</h2>
+
     <div id="zona-drop" class="zona-drop" tabindex="0" role="button"
-         aria-label="Arrastra aquí tu CSV, o pulsa para elegir el fichero">
-      <p><strong>Arrastra aquí tu CSV</strong> o pulsa para elegirlo</p>
-      <p class="texto-pequeno">Solo ficheros .csv. Nada se sube a ningún sitio.</p>
-      <input type="file" id="input-fichero" accept=".csv,text/csv" hidden>
+         aria-label="Arrastra aquí uno o varios CSV, o pulsa para elegirlos">
+      <p class="zona-drop-titulo"><strong>Arrastra aquí tu CSV</strong> o pulsa para elegirlo</p>
+      <p class="texto-pequeno">
+        Puedes soltar varios ficheros del mismo ejercicio a la vez (por ejemplo, si tu bróker
+        separa el informe por periodos): se unen y se ordenan por fecha antes de calcular.
+      </p>
+      <input type="file" id="input-fichero" accept=".csv,text/csv" multiple hidden>
     </div>
-    <p id="nombre-fichero" class="texto-pequeno oculto"></p>
+
+    <ul id="lista-ficheros" class="lista-ficheros oculto"></ul>
+    <p id="nota-sin-subida" class="texto-pequeno oculto">Ninguno de estos ficheros se ha subido a ningún sitio: siguen solo en tu navegador.</p>
   </section>
 
-  <section id="zona-mapeo" class="tarjeta oculto">
-    <h2>2. Indica qué columna es cada cosa</h2>
+  <details id="zona-mapeo" class="tarjeta oculto">
+    <summary id="resumen-mapeo">
+      <h2><span class="paso-etiqueta">Paso 2</span> <span id="resumen-mapeo-texto">Indica qué columna es cada cosa</span></h2>
+    </summary>
 
-    <div id="preset-sugerido" class="aviso aviso-info oculto"></div>
+    <div class="cuerpo-mapeo">
+      <div id="mapeo-aviso" class="aviso aviso-error oculto" role="alert"></div>
+      <div id="mapeo-auto-detectado" class="aviso aviso-info oculto"></div>
+      <div id="preset-sugerido" class="aviso aviso-info oculto"></div>
 
-    <div class="fila-preset">
-      <label for="select-preset">Preset guardado</label>
-      <select id="select-preset">
-        <option value="">— Elegir columnas a mano —</option>
-      </select>
-    </div>
+      <table id="tabla-mapeo" class="tabla-mapeo">
+        <thead>
+          <tr><th scope="col">Campo</th><th scope="col">Columna del CSV</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
 
-    <div id="mapeo-auto-detectado" class="aviso aviso-info oculto"></div>
-
-    <div class="fila-preset">
-      <label for="input-nombre-preset">Guardar este mapeo como preset</label>
-      <input type="text" id="input-nombre-preset" placeholder="p.ej. Mi bróker">
-      <button id="boton-guardar-preset" type="button" class="boton-secundario">Guardar mapeo</button>
-    </div>
-
-    <table id="tabla-mapeo" class="tabla-mapeo">
-      <thead>
-        <tr><th>Campo</th><th>Columna del CSV</th></tr>
-      </thead>
-      <tbody></tbody>
-    </table>
-
-    <details class="vista-previa">
-      <summary>Ver las primeras filas del fichero</summary>
-      <div class="tabla-scroll">
-        <table id="tabla-muestra"></table>
+      <div class="fila-preset">
+        <label for="select-preset">Preset guardado</label>
+        <select id="select-preset">
+          <option value="">— Elegir columnas a mano —</option>
+        </select>
       </div>
-    </details>
 
-    <button id="boton-calcular" class="boton-primario" disabled>Calcular</button>
-  </section>
+      <div class="fila-preset">
+        <label for="input-nombre-preset">Guardar este mapeo como preset</label>
+        <input type="text" id="input-nombre-preset" placeholder="p. ej. Mi bróker" autocomplete="off">
+        <button id="boton-guardar-preset" type="button" class="boton-secundario">Guardar mapeo</button>
+      </div>
+
+      <details class="vista-previa">
+        <summary>Ver las primeras filas del fichero</summary>
+        <div class="tabla-scroll">
+          <table id="tabla-muestra"></table>
+        </div>
+      </details>
+    </div>
+  </details>
+
+  <button id="boton-calcular" class="boton-primario oculto" disabled>Calcular</button>
 
   <section id="zona-error" class="tarjeta aviso aviso-error oculto" role="alert"></section>
 
-  <section id="zona-resultado" class="oculto">
+  <section id="zona-resultado" class="oculto" aria-labelledby="titulo-paso-3">
+    <h2 id="titulo-paso-3" class="visualmente-oculto"><span class="paso-etiqueta">Paso 3</span> Resultado</h2>
 
-    <div id="totales" class="tarjeta"></div>
+    <div id="totales" class="tarjeta tarjeta-total"></div>
 
     <div id="avisos-lectura" class="tarjeta oculto"></div>
 
@@ -99,6 +110,11 @@
     <button id="boton-descargar" class="boton-secundario oculto">Descargar desglose en CSV</button>
 
   </section>
+
+  <p class="aviso-legal">
+    Esto es una ayuda de cálculo, no asesoramiento fiscal. Revisa el resultado antes de
+    presentar tu declaración; en caso de duda, consulta con un profesional.
+  </p>
 
 </main>
 
