@@ -1,0 +1,335 @@
+<title>FIFO.es — propuesta de diseño</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;450;500;600&family=IBM+Plex+Sans:wght@400;450;500;600;700&display=swap">
+
+<style>
+  :root {
+    --ink:        #0E1419;
+    --ink-2:      #1B242D;
+    --paper:      #F2F0EC;
+    --surface:    #FFFFFF;
+    --surface-2:  #F7F5F2;
+    --text:       #14191E;
+    --text-2:     #55606B;
+    --text-3:     #838D97;
+    --line:       #E0DCD5;
+    --line-2:     #EDEAE5;
+
+    --accent:     #1F4B7A;
+    --accent-2:   #2E6BA8;
+    --accent-wash:#E8EFF6;
+
+    --gain:       #1A6B4F;
+    --loss:       #A33228;
+    --warn:       #8A5A12;
+    --warn-wash:  #FBF2E0;
+
+    --f-sans:  "IBM Plex Sans", -apple-system, "Segoe UI", sans-serif;
+    --f-mono:  "IBM Plex Mono", ui-monospace, Menlo, monospace;
+
+    --r: 4px;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ink:        #070A0D;
+      --ink-2:      #10161C;
+      --paper:      #0C1116;
+      --surface:    #141A21;
+      --surface-2:  #1A2128;
+      --text:       #E8EAEC;
+      --text-2:     #A2AAB3;
+      --text-3:     #6E7883;
+      --line:       #232B34;
+      --line-2:     #1C232B;
+      --accent:     #7BA7D4;
+      --accent-2:   #9DC0E3;
+      --accent-wash:#15212E;
+      --gain:       #52B78E;
+      --loss:       #E0796C;
+      --warn:       #D6A254;
+      --warn-wash:  #2A2113;
+    }
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--text);
+    font-family: var(--f-sans);
+    font-size: 15.5px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1, h2, h3 { margin: 0; font-family: var(--f-sans); font-weight: 600; letter-spacing: -0.021em; }
+  p { margin: 0; }
+  .wrap { max-width: 60rem; margin: 0 auto; padding: 0 1.5rem; }
+
+  .mono { font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+  .lbl {
+    font-family: var(--f-mono); font-size: 0.66rem; font-weight: 500;
+    letter-spacing: 0.13em; text-transform: uppercase; color: var(--text-3);
+  }
+
+  /* ── cabecera ── */
+  header.top { background: var(--ink); color: #EEF1F3; padding: 1.1rem 0; }
+  header.top .wrap { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+  .brand { display: flex; align-items: center; gap: 0.6rem; }
+  .brand svg { display: block; }
+  .brand b { font-family: var(--f-sans); font-size: 1.14rem; font-weight: 600; letter-spacing: -0.03em; }
+  .brand b i { font-style: normal; color: #7BA7D4; }
+  header.top .rates { font-family: var(--f-mono); font-size: 0.7rem; color: #8A959F; }
+
+  /* ── hero ── */
+  .hero { background: var(--ink-2); color: #E7EBEE; padding: 3.2rem 0 3.6rem; border-bottom: 1px solid #263039; }
+  .hero .wrap { display: grid; grid-template-columns: minmax(0,1.15fr) minmax(0,1fr); gap: 3rem; align-items: start; }
+  .hero h1 { font-size: clamp(1.7rem, 3.4vw, 2.35rem); line-height: 1.18; color: #FFF; }
+  .hero .sub { margin-top: 0.9rem; color: #A8B3BC; font-size: 1.02rem; max-width: 30rem; }
+  .whats { display: flex; flex-direction: column; gap: 0.1rem; }
+  .whats div { padding: 0.62rem 0; border-bottom: 1px solid #232D36; display: grid; grid-template-columns: 1.6rem 1fr; gap: 0.7rem; align-items: baseline; }
+  .whats div:last-child { border-bottom: none; }
+  .whats span.n { font-family: var(--f-mono); font-size: 0.68rem; color: #5E7EA0; }
+  .whats span.t { font-size: 0.9rem; color: #C3CBD2; }
+  .whats b { color: #FFF; font-weight: 600; }
+
+  /* ── pasos ── */
+  .steps { background: var(--surface); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; }
+  .steps .wrap { display: flex; gap: 0; }
+  .step { flex: 1; padding: 0.85rem 0.2rem; display: flex; align-items: center; gap: 0.55rem; border-bottom: 2px solid transparent; }
+  .step i { font-style: normal; width: 1.35rem; height: 1.35rem; border-radius: 50%; border: 1px solid var(--line); display: grid; place-items: center; font-family: var(--f-mono); font-size: 0.66rem; color: var(--text-3); flex-shrink: 0; }
+  .step span { font-size: 0.86rem; color: var(--text-3); }
+  .step.done i { background: var(--accent); border-color: var(--accent); color: #FFF; }
+  .step.done span { color: var(--text-2); }
+  .step.on { border-bottom-color: var(--accent); }
+  .step.on i { background: var(--accent); border-color: var(--accent); color: #FFF; }
+  .step.on span { color: var(--text); font-weight: 600; }
+
+  main { padding: 2.4rem 0 4rem; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); }
+  .card + .card { margin-top: 0.9rem; }
+  .pad { padding: 1.4rem 1.5rem; }
+
+  /* ── fichero ── */
+  .filerow { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 0.8rem 1rem; background: var(--surface-2); border: 1px solid var(--line-2); border-radius: var(--r); }
+  .filerow .nm { display: flex; align-items: center; gap: 0.6rem; font-size: 0.92rem; }
+  .filerow .sz { color: var(--text-3); font-size: 0.84rem; }
+  .filerow a { color: var(--text-2); font-size: 0.84rem; }
+  .privacy { margin-top: 0.75rem; font-size: 0.83rem; color: var(--text-2); display: flex; gap: 0.45rem; align-items: baseline; }
+  .privacy b { color: var(--text); font-weight: 600; }
+
+  /* ── mapeo plegado ── */
+  .collapsed { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 1rem 1.5rem; cursor: pointer; }
+  .collapsed .left { display: flex; align-items: center; gap: 0.7rem; }
+  .tick { width: 1.1rem; height: 1.1rem; border-radius: 50%; background: var(--gain); display: grid; place-items: center; flex-shrink: 0; }
+  .tick svg { display: block; }
+  .collapsed .t { font-size: 0.94rem; font-weight: 600; }
+  .collapsed .a { font-size: 0.85rem; color: var(--accent); }
+
+  .cta { width: 100%; margin-top: 1.4rem; padding: 0.95rem; background: var(--accent); color: #FFF; border: none; border-radius: var(--r); font-family: var(--f-sans); font-size: 0.98rem; font-weight: 600; cursor: pointer; letter-spacing: 0.01em; }
+
+  /* ── resultado ── */
+  .result { margin-top: 2.6rem; background: var(--surface); border: 1px solid var(--line); border-top: 3px solid var(--accent); border-radius: var(--r); overflow: hidden; }
+  .result .head { padding: 1.9rem 1.5rem 1.8rem; border-bottom: 1px solid var(--line-2); }
+  .result .ej { font-family: var(--f-mono); font-size: 0.68rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-3); }
+  .result .kind { margin-top: 0.95rem; font-family: var(--f-mono); font-size: 0.7rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--gain); }
+  .result .big {
+    font-family: var(--f-mono); font-size: clamp(2.3rem, 5.6vw, 3.3rem); font-weight: 500;
+    line-height: 1.05; letter-spacing: -0.035em; color: var(--text);
+    font-variant-numeric: tabular-nums; margin-top: 0.4rem;
+  }
+  .result .note { margin-top: 0.8rem; font-size: 0.86rem; color: var(--text-2); max-width: 34rem; }
+
+  .split2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); }
+  .split2 > div { padding: 1.3rem 1.5rem; }
+  .split2 > div + div { border-left: 1px solid var(--line-2); }
+  .kv { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; padding: 0.42rem 0; }
+  .kv + .kv { border-top: 1px solid var(--line-2); }
+  .kv .k { font-size: 0.88rem; color: var(--text-2); }
+  .kv .v { font-family: var(--f-mono); font-size: 0.9rem; font-variant-numeric: tabular-nums; }
+
+  /* ── tabla ── */
+  .sec { padding: 1.4rem 1.5rem; border-top: 1px solid var(--line-2); }
+  .sec h3 { font-size: 1.05rem; margin-bottom: 0.2rem; }
+  .sec .cap { font-size: 0.86rem; color: var(--text-2); margin-bottom: 1rem; }
+  .scroll { overflow-x: auto; }
+  table { width: 100%; min-width: 30rem; border-collapse: collapse; }
+  th, td { text-align: right; padding: 0.55rem 0.7rem; font-family: var(--f-mono); font-size: 0.83rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  thead th { font-size: 0.64rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-3); font-weight: 500; border-bottom: 1px solid var(--line); padding-bottom: 0.5rem; }
+  tbody td { border-bottom: 1px solid var(--line-2); color: var(--text-2); }
+  tbody td:last-child { color: var(--text); font-weight: 500; }
+  tfoot td { padding-top: 0.6rem; font-weight: 600; color: var(--text); }
+  .rest { margin-top: 0.9rem; font-size: 0.84rem; color: var(--text-2); }
+  .rest ul { margin: 0.4rem 0 0; padding-left: 1.05rem; }
+  .rest li { font-family: var(--f-mono); font-size: 0.79rem; color: var(--text-3); }
+
+  /* ── casilla ── */
+  .where { background: var(--accent-wash); border: 1px solid var(--line); border-radius: var(--r); padding: 1.3rem 1.5rem; margin-top: 0.9rem; }
+  .where h3 { font-size: 1.02rem; margin-bottom: 0.55rem; }
+  .where p { font-size: 0.89rem; color: var(--text-2); }
+  .where p + p { margin-top: 0.5rem; }
+  .where .warn { margin-top: 0.85rem; padding-top: 0.75rem; border-top: 1px solid var(--line); font-size: 0.83rem; color: var(--warn); }
+
+  /* ── descarga / pago ── */
+  .pay { margin-top: 0.9rem; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 1.4rem 1.5rem; display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 1.4rem; align-items: center; }
+  .pay h3 { font-size: 1.05rem; }
+  .pay p { font-size: 0.87rem; color: var(--text-2); margin-top: 0.35rem; max-width: 32rem; }
+  .pay .btn { padding: 0.85rem 1.4rem; background: var(--ink); color: #FFF; border: none; border-radius: var(--r); font-family: var(--f-sans); font-size: 0.92rem; font-weight: 600; white-space: nowrap; cursor: pointer; }
+  .pay .btn small { display: block; font-weight: 400; font-size: 0.74rem; color: #9FAAB4; margin-top: 0.1rem; }
+
+  footer { border-top: 1px solid var(--line); padding: 1.8rem 0 2.4rem; }
+  footer p { font-size: 0.82rem; color: var(--text-3); max-width: 38rem; }
+
+  @media (max-width: 780px) {
+    .hero .wrap { grid-template-columns: 1fr; gap: 1.8rem; }
+    .pay { grid-template-columns: 1fr; }
+    .step span { display: none; }
+    .step { justify-content: center; }
+  }
+</style>
+
+<header class="top">
+  <div class="wrap">
+    <div class="brand">
+      <svg width="22" height="22" viewBox="0 0 22 22" fill="none" aria-hidden="true">
+        <rect x="1" y="3.5" width="13" height="2.4" rx="1.2" fill="#7BA7D4"/>
+        <rect x="1" y="9.8" width="9" height="2.4" rx="1.2" fill="#4E7CA8" opacity=".75"/>
+        <rect x="1" y="16.1" width="5" height="2.4" rx="1.2" fill="#4E7CA8" opacity=".45"/>
+        <path d="M15.6 4.7h4.6M20.2 4.7l-2-2M20.2 4.7l-2 2" stroke="#7BA7D4" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <b>FIFO<i>.es</i></b>
+    </div>
+    <span class="rates mono">Tipos del BCE · 28/08/2026</span>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="wrap">
+    <div>
+      <h1>Tu bróker extranjero no calcula lo que Hacienda te pide.</h1>
+      <p class="sub">Sube el extracto de tu bróker y obtén la ganancia patrimonial calculada con las reglas españolas. El fichero no sale de tu navegador.</p>
+    </div>
+    <div class="whats">
+      <div><span class="n">01</span><span class="t"><b>FIFO obligatorio.</b> Tu bróker te enseña coste medio. Hacienda exige vender primero las más antiguas.</span></div>
+      <div><span class="n">02</span><span class="t"><b>Tipos oficiales del BCE.</b> El del día de cada operación, no el interno del bróker.</span></div>
+      <div><span class="n">03</span><span class="t"><b>Regla de los dos meses.</b> Las pérdidas con recompra no se declaran: se difieren.</span></div>
+      <div><span class="n">04</span><span class="t"><b>Dividendos aparte.</b> Van en una casilla distinta de las ganancias patrimoniales.</span></div>
+    </div>
+  </div>
+</section>
+
+<nav class="steps">
+  <div class="wrap">
+    <div class="step done"><i>✓</i><span>Extracto</span></div>
+    <div class="step done"><i>✓</i><span>Columnas</span></div>
+    <div class="step on"><i>3</i><span>Resultado</span></div>
+  </div>
+</nav>
+
+<main>
+  <div class="wrap">
+
+    <div class="card pad">
+      <p class="lbl">Paso 1 · Extracto</p>
+      <div class="filerow" style="margin-top:0.85rem">
+        <span class="nm">prueba_1_ganancias.csv <span class="sz">· 537 bytes</span></span>
+        <a href="#">Quitar</a>
+      </div>
+      <p class="privacy"><b>No se ha subido a ningún sitio.</b> El cálculo ocurre en tu navegador; puedes comprobarlo en la pestaña Red.</p>
+    </div>
+
+    <div class="card">
+      <div class="collapsed">
+        <span class="left">
+          <span class="tick"><svg width="9" height="7" viewBox="0 0 9 7" fill="none"><path d="M1 3.4L3.3 5.7L8 1" stroke="#fff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+          <span class="t">7 de 7 columnas detectadas</span>
+        </span>
+        <span class="a">Revisar</span>
+      </div>
+    </div>
+
+    <button class="cta">Calcular</button>
+
+    <div class="result">
+      <div class="head">
+        <p class="ej">Ejercicio 2025 · 1 valor · 3 ventas</p>
+        <p class="kind">Ganancia patrimonial</p>
+        <p class="big">154,41 €</p>
+        <p class="note">Suma del FIFO de todos los valores del fichero, con la regla de los dos meses ya aplicada.</p>
+      </div>
+
+      <div class="split2">
+        <div>
+          <p class="lbl">Ganancias patrimoniales</p>
+          <div style="margin-top:0.6rem">
+            <div class="kv"><span class="k">Bruto de las ventas</span><span class="v">154,41 €</span></div>
+            <div class="kv"><span class="k">Bloqueado por recompra</span><span class="v">0,00 €</span></div>
+            <div class="kv"><span class="k">Declarable</span><span class="v" style="font-weight:600">154,41 €</span></div>
+          </div>
+        </div>
+        <div>
+          <p class="lbl">Dividendos</p>
+          <div style="margin-top:0.6rem">
+            <div class="kv"><span class="k">Bruto</span><span class="v">5,25 €</span></div>
+            <div class="kv"><span class="k">Retención en origen</span><span class="v">0,00 €</span></div>
+            <div class="kv"><span class="k">A declarar</span><span class="v" style="font-weight:600">5,25 €</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sec">
+        <h3>Desglose por venta</h3>
+        <p class="cap">IE00B4L5Y983 · iShares Core MSCI World</p>
+        <div class="scroll">
+          <table>
+            <thead>
+              <tr><th>Fecha venta</th><th>Participaciones</th><th>Bruto</th><th>Bloqueado</th><th>Declarado</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>10/04/2025</td><td>8,00</td><td>78,20 €</td><td>0,00 €</td><td>78,20 €</td></tr>
+              <tr><td>15/06/2025</td><td>2,00</td><td>28,80 €</td><td>0,00 €</td><td>28,80 €</td></tr>
+              <tr><td>10/08/2025</td><td>4,70</td><td>47,41 €</td><td>0,00 €</td><td>47,41 €</td></tr>
+            </tbody>
+            <tfoot>
+              <tr><td>Total</td><td>14,70</td><td>154,41 €</td><td>0,00 €</td><td>154,41 €</td></tr>
+            </tfoot>
+          </table>
+        </div>
+        <div class="rest">
+          Quedan sin vender — no se declaran este año, pero su coste se arrastra al siguiente:
+          <ul>
+            <li>0,30 participaciones compradas el 10/02/2025</li>
+            <li>0,25 participaciones compradas el 01/03/2025</li>
+            <li>3,00 participaciones compradas el 20/05/2025</li>
+            <li>1,50 participaciones compradas el 01/07/2025</li>
+            <li>2,00 participaciones compradas el 20/09/2025</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="where">
+      <h3>Dónde va esto en tu declaración</h3>
+      <p><b>Los 154,41 €</b> van en el apartado de ganancias y pérdidas patrimoniales derivadas de transmisiones, dentro de la base imponible del ahorro.</p>
+      <p><b>Los 5,25 € de dividendos</b> van en un apartado distinto: rendimientos del capital mobiliario.</p>
+      <p class="warn">Los números de casilla concretos cambian cada campaña. Compruébalos en el borrador de Renta Web o con tu gestoría antes de presentar.</p>
+    </div>
+
+    <div class="pay">
+      <div>
+        <h3>Descarga el desglose completo</h3>
+        <p>Operación por operación, con los lotes FIFO consumidos, el tipo de cambio aplicado a cada una y las pérdidas diferidas. Es lo que necesitas si Hacienda te pide justificación.</p>
+      </div>
+      <button class="btn">Descargar por 40 €<small>Pago único · sin cuenta</small></button>
+    </div>
+
+    <footer>
+      <p>FIFO.es es una ayuda de cálculo, no asesoramiento fiscal. Revisa siempre el resultado antes de presentar tu declaración. Tipos de cambio de referencia del Banco Central Europeo.</p>
+    </footer>
+
+  </div>
+</main>

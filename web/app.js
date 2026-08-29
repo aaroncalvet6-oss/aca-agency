@@ -47,7 +47,7 @@ from decimal import Decimal
 
 import lector_csv
 import motor_web
-from calculadora import calcular_desglose
+from calculadora import _fecha_para_ordenar, calcular_desglose
 
 
 def _dinero_multi(valor):
@@ -56,14 +56,30 @@ def _dinero_multi(valor):
 
 def _resumen_dividendos_multi(dividendos_por_valor):
     resumen = lector_csv.resumir_dividendos(dividendos_por_valor)
+    a_declarar = resumen["bruto_total"] - resumen["retencion_total"]
     return {
         "bruto_total": _dinero_multi(resumen["bruto_total"]),
         "retencion_total": _dinero_multi(resumen["retencion_total"]),
+        "a_declarar_total": _dinero_multi(a_declarar),
         "por_valor": {
             valor: {"bruto": _dinero_multi(d["bruto"]), "retencion": _dinero_multi(d["retencion"])}
             for valor, d in resumen["por_valor"].items()
         },
     }
+
+
+def _participaciones_por_venta(operaciones, detalle_ventas):
+    # calcular_desglose no devuelve las participaciones de cada venta (solo
+    # el resultado en euros), pero cada operacion de venta original ya trae
+    # su propio "acciones". Como calcular_desglose ordena las operaciones
+    # con este mismo criterio (_fecha_para_ordenar, orden estable) antes de
+    # recorrerlas, las ventas ordenadas aqui caen en el mismo orden que las
+    # filas de detalle_ventas: se pueden emparejar por posicion.
+    ventas_ordenadas = sorted(
+        (op for op in operaciones if op["tipo"] == "venta"),
+        key=lambda op: _fecha_para_ordenar(op["fecha"]),
+    )
+    return [str(venta["acciones"]) for venta in ventas_ordenadas]
 
 
 def _anios_de_dividendos(dividendos_por_valor):
@@ -78,7 +94,10 @@ def procesar_csvs_multi(ficheros, mapeo, tipos=None):
         "valores": {},
         "dividendos": None,
         "ejercicio_fiscal": [],
-        "totales": {"ganancia_patrimonial": None, "completo": True, "motivo": None},
+        "totales": {
+            "ganancia_patrimonial": None, "bruto_patrimonial": None, "bloqueado_patrimonial": None,
+            "completo": True, "motivo": None,
+        },
     }
 
     varios = len(ficheros) > 1
@@ -119,6 +138,8 @@ def procesar_csvs_multi(ficheros, mapeo, tipos=None):
         return resultado
 
     ganancia_total = Decimal("0")
+    bruto_total = Decimal("0")
+    bloqueado_total = Decimal("0")
     algun_error = False
     # El ejercicio fiscal lo marca la fecha de la VENTA (o del dividendo si
     # no hay ventas): una compra sin vender todavia no genera nada que
@@ -136,19 +157,30 @@ def procesar_csvs_multi(ficheros, mapeo, tipos=None):
             }
             continue
 
+        bruto_valor = sum((fila["resultado_bruto"] for fila in detalle_ventas), Decimal("0"))
+        bloqueado_valor = sum((fila["bloqueado"] for fila in detalle_ventas), Decimal("0"))
+        participaciones = _participaciones_por_venta(operaciones, detalle_ventas)
+        participaciones_valor = sum((Decimal(p) for p in participaciones), Decimal("0"))
+
         ganancia_total += ganancia
+        bruto_total += bruto_valor
+        bloqueado_total += bloqueado_valor
         anios_declarables.update(fila["fecha"].split("/")[-1] for fila in detalle_ventas)
         resultado["valores"][valor] = {
             "error": None,
             "ganancia": _dinero_multi(ganancia),
+            "bruto_total": _dinero_multi(bruto_valor),
+            "bloqueado_total": _dinero_multi(bloqueado_valor),
+            "participaciones_total": str(participaciones_valor),
             "desglose": [
                 {
                     "fecha": fila["fecha"],
+                    "participaciones": participaciones[idx],
                     "resultado_bruto": _dinero_multi(fila["resultado_bruto"]),
                     "bloqueado": _dinero_multi(fila["bloqueado"]),
                     "resultado_declarado": _dinero_multi(fila["resultado_declarado"]),
                 }
-                for fila in detalle_ventas
+                for idx, fila in enumerate(detalle_ventas)
             ],
             "lotes_pendientes": [
                 {"fecha": lote["fecha"], "acciones": str(lote["acciones"])} for lote in lotes_finales
@@ -160,6 +192,8 @@ def procesar_csvs_multi(ficheros, mapeo, tipos=None):
 
     resultado["totales"]["completo"] = not algun_error
     resultado["totales"]["ganancia_patrimonial"] = None if algun_error else _dinero_multi(ganancia_total)
+    resultado["totales"]["bruto_patrimonial"] = None if algun_error else _dinero_multi(bruto_total)
+    resultado["totales"]["bloqueado_patrimonial"] = None if algun_error else _dinero_multi(bloqueado_total)
     if algun_error:
         n_errores = sum(1 for v in resultado["valores"].values() if v["error"])
         resultado["totales"]["motivo"] = f"{n_errores} valor(es) no se han podido calcular (mira el detalle de cada uno)."
@@ -196,9 +230,15 @@ function formatoDinero(cadena) {
 }
 
 // Las cantidades de acciones (p.ej. "0.30") vienen de Python con el punto
-// decimal de Decimal: en la página TODO se lee con coma, sin excepción.
+// decimal de Decimal: en la página TODO se lee con coma, sin excepción, y
+// con un mínimo de 2 decimales ("3" -> "3,00", "1.5" -> "1,50") para que
+// la columna cuadre igual que el resto de cifras tabulares.
 function formatoCantidad(cadena) {
-  return cadena.replace(".", ",");
+  const negativo = cadena.trim().startsWith("-");
+  const [entero, decimalesBrutos] = cadena.replace("-", "").split(".");
+  const enteroConMiles = entero.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+  const decimales = (decimalesBrutos || "").padEnd(2, "0");
+  return `${negativo ? "-" : ""}${enteroConMiles},${decimales}`;
 }
 
 // --- Progreso de los 3 pasos ---------------------------------------------
@@ -206,11 +246,20 @@ function formatoCantidad(cadena) {
 const ORDEN_PASO = { carga: 1, mapeo: 2, resultado: 3 };
 
 function actualizarPasos(pasoActivo) {
+  mostrar(el("pasos"));
   for (const [nombre, numero] of Object.entries(ORDEN_PASO)) {
-    const li = el(`paso-nav-${numero}`);
-    li.classList.remove("paso-activo", "paso-completo");
-    if (nombre === pasoActivo) li.classList.add("paso-activo");
-    else if (numero < ORDEN_PASO[pasoActivo]) li.classList.add("paso-completo");
+    const paso = el(`paso-nav-${numero}`);
+    const marcador = paso.querySelector("i");
+    paso.classList.remove("done", "on");
+    if (nombre === pasoActivo) {
+      paso.classList.add("on");
+      marcador.textContent = String(numero);
+    } else if (numero < ORDEN_PASO[pasoActivo]) {
+      paso.classList.add("done");
+      marcador.textContent = "✓";
+    } else {
+      marcador.textContent = String(numero);
+    }
   }
 }
 
@@ -272,7 +321,7 @@ async function cargarMotor() {
     el("estado-motor-texto").innerHTML =
       "No se ha podido cargar el motor de cálculo (Python). Comprueba tu conexión y recarga la página. " +
       `<br><span class="texto-pequeno">${escaparHtml(error.message || String(error))}</span>`;
-    el("estado-motor").classList.add("aviso", "aviso-error");
+    el("estado-motor").classList.add("aviso-error");
     return false;
   }
 }
@@ -290,14 +339,17 @@ async function cargarTiposBCE() {
     console.error("Fallo cargando los tipos de cambio del BCE:", error);
     bceDisponible = false;
 
-    const contenedor = el("frescura-bce");
-    contenedor.classList.add("desactualizado");
-    contenedor.innerHTML =
+    const rates = el("frescura-bce");
+    rates.textContent = "Tipos del BCE no disponibles";
+    rates.classList.add("warn");
+
+    const banner = el("bce-error");
+    banner.querySelector(".wrap").innerHTML =
       "No se han podido cargar los tipos de cambio oficiales del BCE " +
       "(el motor de cálculo sí ha cargado bien). Puedes calcular operaciones en EUR con normalidad; " +
       "las de otras divisas no se podrán calcular hasta que esto se resuelva. " +
-      `<br><span class="texto-pequeno">${escaparHtml(error.message || String(error))}</span>`;
-    mostrar(contenedor);
+      `<span class="mono"> ${escaparHtml(error.message || String(error))}</span>`;
+    mostrar(banner);
   }
 }
 
@@ -306,21 +358,21 @@ function mostrarFrescuraBCE() {
   const info = infoPy.toJs({ dict_converter: Object.fromEntries });
   infoPy.destroy();
 
-  const contenedor = el("frescura-bce");
-  mostrar(contenedor);
+  const rates = el("frescura-bce");
+  rates.classList.remove("warn");
 
   if (!info.ok) {
-    contenedor.classList.add("desactualizado");
-    contenedor.textContent = `No se ha podido comprobar la fecha de los tipos de cambio del BCE: ${info.error}`;
+    rates.textContent = "Tipos del BCE: error al comprobar la fecha";
+    rates.classList.add("warn");
     return;
   }
 
-  let texto = `Tipos del BCE actualizados hasta el ${info.fecha_mas_reciente}.`;
+  let texto = `Tipos del BCE · ${info.fecha_mas_reciente}`;
   if (info.desactualizado) {
-    contenedor.classList.add("desactualizado");
-    texto += ` Este dato tiene ${info.dias_de_antiguedad} días — puede que las operaciones más recientes no se puedan calcular todavía.`;
+    texto += ` · desactualizado (${info.dias_de_antiguedad} d)`;
+    rates.classList.add("warn");
   }
-  contenedor.textContent = texto;
+  rates.textContent = texto;
 }
 
 // --- Presets: persistencia en localStorage --------------------------------
@@ -448,12 +500,13 @@ function pintarListaFicheros() {
   }
 
   ficherosActuales.forEach((fichero, indice) => {
-    const li = document.createElement("li");
-    li.innerHTML = `
-      <span class="nombre-fichero-info">${escaparHtml(fichero.nombre)} — ${fichero.tamano.toLocaleString("es-ES")} bytes</span>
-      <button type="button" class="quitar-fichero" data-indice="${indice}">Quitar</button>
+    const fila = document.createElement("div");
+    fila.className = "filerow";
+    fila.innerHTML = `
+      <span class="nm">${escaparHtml(fichero.nombre)} <span class="sz">· ${fichero.tamano.toLocaleString("es-ES")} bytes</span></span>
+      <a class="quitar-fichero" data-indice="${indice}">Quitar</a>
     `;
-    lista.appendChild(li);
+    lista.appendChild(fila);
   });
 
   lista.querySelectorAll(".quitar-fichero").forEach((boton) => {
@@ -721,12 +774,22 @@ function actualizarResumenMapeoTexto() {
   const valores = valoresDelFormulario();
   const nMapeados = Object.keys(valores).length;
   const faltanObligatorios = CAMPOS_OBLIGATORIOS.filter((campo) => !valores[campo]);
+  const completo = faltanObligatorios.length === 0 && columnasDuplicadas(valores).length === 0;
 
   const texto = el("resumen-mapeo-texto");
-  if (faltanObligatorios.length > 0) {
-    texto.textContent = `Falta indicar: ${faltanObligatorios.map((c) => ETIQUETAS_CAMPO[c]).join(", ")}`;
+  const accion = el("resumen-mapeo-accion");
+  const tick = el("mapeo-tick");
+
+  if (!completo) {
+    texto.textContent = faltanObligatorios.length > 0
+      ? `Falta indicar: ${faltanObligatorios.map((c) => ETIQUETAS_CAMPO[c]).join(", ")}`
+      : "Hay columnas repetidas";
+    accion.textContent = "Completar";
+    tick.classList.add("alerta");
   } else {
-    texto.textContent = `${nMapeados} de ${todosLosCampos.length} columnas detectadas — revisar`;
+    texto.textContent = `${nMapeados} de ${todosLosCampos.length} columnas detectadas`;
+    accion.textContent = "Revisar";
+    tick.classList.remove("alerta");
   }
 }
 
@@ -798,47 +861,164 @@ function calcular() {
 }
 
 function pintarResultado(resultado) {
-  pintarTotales(resultado);
-  pintarDondeVaEsto(resultado);
+  pintarResultadoCard(resultado);
   pintarAvisos(resultado.avisos_lectura);
-  pintarDividendos(resultado.dividendos);
-  pintarValores(resultado.valores);
+  pintarDondeVaEsto(resultado);
 
   const hayAlgoQueDescargar = Object.values(resultado.valores).some((v) => v.desglose && v.desglose.length);
-  el("boton-descargar").classList.toggle("oculto", !hayAlgoQueDescargar);
+  el("zona-pago").classList.toggle("oculto", !hayAlgoQueDescargar);
 }
 
 function etiquetaEjercicio(anios) {
   if (!anios || anios.length === 0) return "";
-  return anios.length === 1 ? `Ejercicio fiscal ${anios[0]}` : `Ejercicios fiscales ${anios.join(" y ")}`;
+  return anios.length === 1 ? `Ejercicio ${anios[0]}` : `Ejercicios ${anios.join(" y ")}`;
 }
 
-function pintarTotales(resultado) {
-  const contenedor = el("totales");
-  const { completo, ganancia_patrimonial, motivo } = resultado.totales;
-  const eyebrow = etiquetaEjercicio(resultado.ejercicio_fiscal);
+function bloqueDividendos(dividendos) {
+  if (!dividendos || Object.keys(dividendos.por_valor).length === 0) return "";
+  return `
+    <div>
+      <p class="lbl">Dividendos</p>
+      <div style="margin-top:0.6rem">
+        <div class="kv"><span class="k">Bruto</span><span class="v">${formatoDinero(dividendos.bruto_total)}</span></div>
+        <div class="kv"><span class="k">Retención en origen</span><span class="v">${formatoDinero(dividendos.retencion_total)}</span></div>
+        <div class="kv"><span class="k">A declarar</span><span class="v" style="font-weight:600">${formatoDinero(dividendos.a_declarar_total)}</span></div>
+      </div>
+    </div>
+  `;
+}
 
-  if (completo) {
-    const negativo = ganancia_patrimonial.trim().startsWith("-");
-    const clase = negativo ? "perdida" : "ganancia";
-    const etiqueta = negativo ? "Pérdida patrimonial" : "Ganancia patrimonial";
-    contenedor.innerHTML = `
-      ${eyebrow ? `<p class="total-eyebrow">${eyebrow}</p>` : ""}
-      <span class="chip-resultado ${clase}">${etiqueta}</span>
-      <p class="cifra-hero ${clase}">${formatoDinero(ganancia_patrimonial)}</p>
-      <p class="total-secundario">Suma del FIFO de todos los valores del fichero, ya aplicada la regla de los 2 meses.</p>
+// El bloque central de toda la página: la cifra, y justo debajo el
+// desglose de ganancias patrimoniales y dividendos, y por cada valor su
+// tabla de ventas y lo que le queda sin vender.
+function pintarResultadoCard(resultado) {
+  const card = el("resultado-card");
+  const { completo, ganancia_patrimonial, bruto_patrimonial, bloqueado_patrimonial, motivo } = resultado.totales;
+  const eyebrow = etiquetaEjercicio(resultado.ejercicio_fiscal);
+  const bloqueDivs = bloqueDividendos(resultado.dividendos);
+
+  if (!completo) {
+    // Nunca se muestra un importe aqui (ni "0,00 €"): si no es "completo"
+    // es que no hay un total fiable que mostrar, y un numero con aspecto
+    // de valido induciria a pensar que ya esta calculado. Los dividendos
+    // son independientes del FIFO de ganancias patrimoniales, asi que se
+    // muestran igualmente si los hay.
+    card.innerHTML = `
+      <div class="head">
+        ${eyebrow ? `<p class="ej mono">${escaparHtml(eyebrow)}</p>` : ""}
+        <p class="kind plano">Sin calcular</p>
+        <p class="big chica">No se ha podido calcular</p>
+        <p class="note">${escaparHtml(motivo || "Revisa los avisos y el detalle de cada valor más abajo.")}</p>
+      </div>
+      ${bloqueDivs ? `<div class="split2">${bloqueDivs}</div>` : ""}
     `;
-  } else {
-    // Nunca se muestra un importe aqui (ni "0,00 €"): si no es
-    // "completo" es que no hay un total fiable que mostrar, y un numero
-    // con pinta de valido induciria a pensar que ya esta calculado.
-    contenedor.innerHTML = `
-      ${eyebrow ? `<p class="total-eyebrow">${eyebrow}</p>` : ""}
-      <span class="chip-resultado no-calculable">Sin calcular</span>
-      <p class="cifra-hero no-calculable">No se ha podido calcular</p>
-      <p class="total-secundario">${escaparHtml(motivo || "Revisa los avisos y el detalle de cada valor más abajo.")}</p>
+    return;
+  }
+
+  const valoresOk = Object.entries(resultado.valores).filter(([, d]) => !d.error);
+  const nValores = valoresOk.length;
+  const nVentas = valoresOk.reduce((acc, [, d]) => acc + d.desglose.length, 0);
+  const piezasEyebrow = [
+    eyebrow,
+    `${nValores} valor${nValores === 1 ? "" : "es"}`,
+    `${nVentas} venta${nVentas === 1 ? "" : "s"}`,
+  ].filter(Boolean).join(" · ");
+
+  const negativo = ganancia_patrimonial.trim().startsWith("-");
+  const claseKind = negativo ? "perdida" : "";
+  const etiquetaKind = negativo ? "Pérdida patrimonial" : "Ganancia patrimonial";
+
+  const bloqueGanancias = `
+    <div>
+      <p class="lbl">Ganancias patrimoniales</p>
+      <div style="margin-top:0.6rem">
+        <div class="kv"><span class="k">Bruto de las ventas</span><span class="v">${formatoDinero(bruto_patrimonial)}</span></div>
+        <div class="kv"><span class="k">Bloqueado por recompra</span><span class="v">${formatoDinero(bloqueado_patrimonial)}</span></div>
+        <div class="kv"><span class="k">Declarable</span><span class="v" style="font-weight:600">${formatoDinero(ganancia_patrimonial)}</span></div>
+      </div>
+    </div>
+  `;
+
+  const secciones = Object.entries(resultado.valores).map(([valor, datos]) => htmlSeccionValor(valor, datos)).join("");
+
+  card.innerHTML = `
+    <div class="head">
+      <p class="ej mono">${escaparHtml(piezasEyebrow)}</p>
+      <p class="kind ${claseKind}">${etiquetaKind}</p>
+      <p class="big">${formatoDinero(ganancia_patrimonial)}</p>
+      <p class="note">Suma del FIFO de todos los valores del fichero, con la regla de los dos meses ya aplicada.</p>
+    </div>
+    <div class="split2">${bloqueGanancias}${bloqueDivs}</div>
+    ${secciones}
+  `;
+}
+
+function htmlSeccionValor(valor, datos) {
+  if (datos.error) {
+    return `
+      <div class="sec">
+        <h3>${escaparHtml(valor)}</h3>
+        <p class="error-valor">No se puede calcular: ${escaparHtml(datos.error)}</p>
+      </div>
     `;
   }
+
+  const htmlLotes = htmlLotesPendientes(datos.lotes_pendientes);
+
+  if (!datos.desglose.length) {
+    return `
+      <div class="sec">
+        <h3>${escaparHtml(valor)}</h3>
+        <p class="cap">Sin ventas en este fichero.</p>
+        ${htmlLotes}
+      </div>
+    `;
+  }
+
+  const filas = datos.desglose.map((op) => `
+    <tr>
+      <td>${op.fecha}</td>
+      <td>${formatoCantidad(op.participaciones)}</td>
+      <td>${formatoDinero(op.resultado_bruto)}</td>
+      <td>${formatoDinero(op.bloqueado)}</td>
+      <td>${formatoDinero(op.resultado_declarado)}</td>
+    </tr>
+  `).join("");
+
+  return `
+    <div class="sec">
+      <h3>Desglose por venta</h3>
+      <p class="cap">${escaparHtml(valor)}</p>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Fecha venta</th><th>Participaciones</th><th>Bruto</th><th>Bloqueado</th><th>Declarado</th></tr></thead>
+          <tbody>${filas}</tbody>
+          <tfoot>
+            <tr>
+              <td>Total</td>
+              <td>${formatoCantidad(datos.participaciones_total)}</td>
+              <td>${formatoDinero(datos.bruto_total)}</td>
+              <td>${formatoDinero(datos.bloqueado_total)}</td>
+              <td>${formatoDinero(datos.ganancia)}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+      ${htmlLotes}
+    </div>
+  `;
+}
+
+function htmlLotesPendientes(lotes) {
+  if (!lotes || lotes.length === 0) return "";
+  const items = lotes.map((l) => `<li>${formatoCantidad(l.acciones)} participaciones compradas el ${l.fecha}</li>`).join("");
+  return `
+    <div class="rest">
+      Quedan sin vender — siguen en tu cartera, no generan ganancia ahora, y su coste (ya ajustado por la
+      regla de los 2 meses si aplica) es el que se usará cuando las vendas:
+      <ul>${items}</ul>
+    </div>
+  `;
 }
 
 // Lo que le importa al usuario después del número: en qué apartado de la
@@ -852,25 +1032,16 @@ function pintarDondeVaEsto(resultado) {
   const hayDividendos = resultado.dividendos && Object.keys(resultado.dividendos.por_valor).length > 0;
 
   contenedor.innerHTML = `
-    <h2>Dónde va esto en tu declaración</h2>
-    <dl class="lista-apartados">
-      <div>
-        <dt>Ganancias y pérdidas patrimoniales</dt>
-        <dd>El resultado de vender acciones, participaciones o ETFs se declara como ganancia o pérdida
-        patrimonial, dentro de la base imponible del ahorro (Modelo 100 de la renta).</dd>
-      </div>
-      ${hayDividendos ? `
-      <div>
-        <dt>Dividendos</dt>
-        <dd>Son rendimiento del capital mobiliario, no ganancia patrimonial: van en un apartado distinto,
-        también dentro de la base imponible del ahorro, con su propia retención.</dd>
-      </div>` : ""}
-    </dl>
-    <div class="aviso aviso-info">
-      No indicamos el número exacto de casilla: cambia de una campaña a otra y esta herramienta no lo
-      tiene verificado. Comprueba la casilla concreta en el borrador de Hacienda o con una gestoría antes
-      de presentar.
-    </div>
+    <h3>Dónde va esto en tu declaración</h3>
+    <p><b>Los ${formatoDinero(resultado.totales.ganancia_patrimonial)}</b> van en el apartado de ganancias y
+    pérdidas patrimoniales derivadas de transmisiones, dentro de la base imponible del ahorro.</p>
+    ${hayDividendos ? `
+    <p><b>Los ${formatoDinero(resultado.dividendos.bruto_total)} de dividendos</b> van en un apartado
+    distinto: rendimientos del capital mobiliario.</p>` : ""}
+    <p class="warn-note">
+      Los números de casilla concretos cambian cada campaña. Compruébalos en el borrador de Renta Web o
+      con tu gestoría antes de presentar.
+    </p>
   `;
   mostrar(contenedor);
 }
@@ -880,81 +1051,11 @@ function pintarAvisos(avisos) {
   if (!avisos || avisos.length === 0) { ocultar(contenedor); return; }
 
   const items = avisos.map((a) => `<li>${escaparHtml(a)}</li>`).join("");
-  contenedor.innerHTML = `<h2>Filas no procesadas (${avisos.length})</h2><ul class="lista-avisos">${items}</ul>`;
-  mostrar(contenedor);
-}
-
-function pintarDividendos(dividendos) {
-  const contenedor = el("dividendos");
-  if (!dividendos || Object.keys(dividendos.por_valor).length === 0) { ocultar(contenedor); return; }
-
-  const filasPorValor = Object.entries(dividendos.por_valor)
-    .map(([valor, d]) => `<tr><td>${escaparHtml(valor)}</td><td>${formatoDinero(d.bruto)}</td><td>${formatoDinero(d.retencion)}</td></tr>`)
-    .join("");
-
   contenedor.innerHTML = `
-    <h2>Dividendos</h2>
-    <p class="dividendos-nota">Rendimiento del capital mobiliario: van en una casilla distinta de la renta a las ganancias patrimoniales.</p>
-    <div class="tabla-scroll">
-      <table class="tabla-desglose">
-        <thead><tr><th>Valor</th><th>Bruto</th><th>Retención</th></tr></thead>
-        <tbody>${filasPorValor}</tbody>
-        <tfoot><tr><td><strong>Total</strong></td><td><strong>${formatoDinero(dividendos.bruto_total)}</strong></td><td><strong>${formatoDinero(dividendos.retencion_total)}</strong></td></tr></tfoot>
-      </table>
-    </div>
+    <p class="lbl">Filas no procesadas · ${avisos.length}</p>
+    <ul class="lista-avisos" style="margin-top:0.7rem">${items}</ul>
   `;
   mostrar(contenedor);
-}
-
-function pintarValores(valores) {
-  const contenedor = el("desglose-por-valor");
-  contenedor.innerHTML = "";
-
-  for (const [valor, datos] of Object.entries(valores)) {
-    const bloque = document.createElement("div");
-    bloque.className = "tarjeta valor-bloque";
-
-    if (datos.error) {
-      bloque.innerHTML = `
-        <h3>${escaparHtml(valor)}</h3>
-        <div class="aviso aviso-error">No se puede calcular: ${escaparHtml(datos.error)}</div>
-      `;
-      contenedor.appendChild(bloque);
-      continue;
-    }
-
-    const negativo = datos.ganancia.trim().startsWith("-");
-
-    const filasDesglose = datos.desglose.map((op) => `
-      <tr>
-        <td>${op.fecha}</td>
-        <td>${formatoDinero(op.resultado_bruto)}</td>
-        <td>${formatoDinero(op.bloqueado)}</td>
-        <td>${formatoDinero(op.resultado_declarado)}</td>
-      </tr>
-    `).join("");
-
-    const lotesPendientes = datos.lotes_pendientes.length
-      ? `<ul class="lista-lotes">${datos.lotes_pendientes.map((l) => `<li>${formatoCantidad(l.acciones)} ud. del ${l.fecha}</li>`).join("")}</ul>`
-      : "";
-
-    bloque.innerHTML = `
-      <h3><span class="nombre-valor">${escaparHtml(valor)}</span><span class="cifra-valor ${negativo ? "perdida" : "ganancia"}">${formatoDinero(datos.ganancia)}</span></h3>
-      ${datos.desglose.length ? `
-        <div class="tabla-scroll">
-          <table class="tabla-desglose tabla-desglose-ventas">
-            <thead><tr><th>Fecha venta</th><th>Bruto</th><th>Bloqueado (2 meses)</th><th>Declarado</th></tr></thead>
-            <tbody>${filasDesglose}</tbody>
-          </table>
-        </div>` : `<p class="total-secundario">Sin ventas en este fichero.</p>`}
-      ${lotesPendientes ? `
-        <p class="lotes-pendientes-nota">
-          Quedan sin vender — siguen en tu cartera, no generan ganancia ahora, y su coste (ya ajustado
-          por la regla de los 2 meses si aplica) es el que se usará cuando las vendas:
-        </p>${lotesPendientes}` : ""}
-    `;
-    contenedor.appendChild(bloque);
-  }
 }
 
 // --- Paso 4: descargar el desglose en CSV --------------------------------
@@ -962,11 +1063,11 @@ function pintarValores(valores) {
 function descargarDesgloseCSV() {
   if (!ultimoResultado) return;
 
-  const filas = [["Valor", "Fecha venta", "Resultado bruto", "Bloqueado (regla 2 meses)", "Resultado declarado"]];
+  const filas = [["Valor", "Fecha venta", "Participaciones", "Resultado bruto", "Bloqueado (regla 2 meses)", "Resultado declarado"]];
   for (const [valor, datos] of Object.entries(ultimoResultado.valores)) {
     if (datos.error || !datos.desglose) continue;
     for (const op of datos.desglose) {
-      filas.push([valor, op.fecha, op.resultado_bruto, op.bloqueado, op.resultado_declarado]);
+      filas.push([valor, op.fecha, op.participaciones, op.resultado_bruto, op.bloqueado, op.resultado_declarado]);
     }
   }
 
