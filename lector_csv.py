@@ -28,6 +28,8 @@ import csv
 import io
 import json
 import os
+import re
+import unicodedata
 from collections import defaultdict
 from datetime import datetime
 from decimal import Decimal
@@ -38,6 +40,78 @@ CAMPOS_OPCIONALES = ("divisa", "comision")
 FORMATOS_FECHA = ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y", "%d.%m.%Y")
 
 RUTA_PRESETS_POR_DEFECTO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "presets_broker.json")
+
+# Sinonimos habituales para adivinar el mapeo por el nombre de la
+# cabecera (ver sugerir_mapeo). Los nombres de aqui se comparan ya
+# normalizados (ver _normalizar_cabecera): minusculas, sin acentos, sin
+# espacios/guiones/parentesis, asi que "Nº Acciones" y "n acciones"
+# coinciden igual que "numeroacciones".
+SINONIMOS_CAMPO = {
+    "fecha": [
+        "fecha", "date", "fecha operacion", "fecha ejecucion", "fecha contratacion",
+        "trade date", "value date", "fecha valor", "fecha transaccion",
+    ],
+    "tipo": [
+        "tipo", "type", "tipo operacion", "transaction type", "operacion",
+        "accion", "movimiento", "concepto",
+    ],
+    "valor": [
+        "isin", "valor", "ticker", "symbol", "security", "nombre",
+        "activo", "instrumento", "producto", "titulo", "security name",
+    ],
+    "cantidad": [
+        "cantidad", "quantity", "shares", "acciones", "unidades",
+        "n acciones", "numero acciones", "units", "titulos", "nominal",
+    ],
+    "precio": [
+        "precio", "price", "precio unitario", "unit price", "cotizacion",
+        "importe unitario", "share price", "precio accion",
+    ],
+    "divisa": ["divisa", "moneda", "currency", "ccy", "divisa operacion"],
+    "comision": [
+        "comision", "comisiones", "comision eur", "fee", "fees",
+        "gastos", "coste", "costes", "charges", "commission", "comision operacion",
+    ],
+}
+
+
+def _normalizar_cabecera(texto):
+    """Minusculas, sin acentos, sin espacios/guiones/parentesis, para
+    comparar cabeceras de forma tolerante a mayusculas, tildes y
+    variaciones de formato ("Fecha operación" ~ "fecha_operacion").
+
+    Los indicadores ordinales "º"/"ª" (p.ej. "Nº Acciones") se quitan
+    antes de la normalizacion NFKD: esta los descompone en una letra
+    superindice ("º" -> "o" superindice) que sobrevive al paso a ascii,
+    coloandose como si fuera una letra mas ("Nº" acabaria dando "no" en
+    vez de "n") y rompiendo la comparacion con sinonimos como "n acciones".
+    """
+    texto = texto.replace("º", "").replace("ª", "")
+    texto = unicodedata.normalize("NFKD", texto).encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"[^a-z0-9]+", "", texto.strip().lower())
+
+
+def sugerir_mapeo(cabeceras):
+    """Adivina que columna es cada campo por el nombre de la cabecera, con
+    tolerancia a mayusculas/acentos/espacios y sinonimos habituales
+    (importe, coste, comisiones, divisa, currency, date, quantity...).
+
+    Devuelve un dict {campo: columna} solo con los campos que se han
+    podido adivinar CON CONFIANZA (una unica cabecera coincide con ese
+    campo); el resto se deja fuera para que el usuario elija a mano. Si
+    dos cabeceras distintas coinciden con el mismo campo, tampoco se
+    sugiere nada para ese campo (mejor no adivinar mal que adivinar a
+    ciegas)."""
+    normalizadas = {cabecera: _normalizar_cabecera(cabecera) for cabecera in cabeceras}
+
+    sugerencia = {}
+    for campo, sinonimos in SINONIMOS_CAMPO.items():
+        sinonimos_normalizados = {_normalizar_cabecera(s) for s in sinonimos}
+        candidatos = [c for c, norm in normalizadas.items() if norm in sinonimos_normalizados]
+        if len(candidatos) == 1:
+            sugerencia[campo] = candidatos[0]
+
+    return sugerencia
 
 # Categorias reconocidas en la columna "tipo". "dividendo" se extrae aparte
 # (es rendimiento del capital mobiliario, casilla distinta a las ganancias
@@ -99,6 +173,14 @@ def _parsear_fecha(texto):
         f"No reconozco el formato de fecha '{texto}' (formatos soportados: "
         f"{', '.join(FORMATOS_FECHA)})"
     )
+
+
+def _formatear_fecha(fecha):
+    """DD/MM/AAAA a partir de los enteros .day/.month/.year del date, sin
+    pasar por strftime: un f-string con enteros no tiene ninguna
+    ambiguedad posible de dia/mes, a diferencia de un especificador de
+    formato que dependa de como lo interprete la libc de turno."""
+    return f"{fecha.day:02d}/{fecha.month:02d}/{fecha.year:04d}"
 
 
 def _parsear_numero(texto):
@@ -181,9 +263,29 @@ def leer_operaciones(ruta_csv=None, mapeo=None, tipos=None, preset=None,
     if not mapeo:
         raise ErrorLectorCSV("Hace falta un 'mapeo' (o un 'preset' ya guardado)")
 
-    faltan = [campo for campo in CAMPOS_OBLIGATORIOS if campo not in mapeo]
+    faltan = [campo for campo in CAMPOS_OBLIGATORIOS if not mapeo.get(campo)]
     if faltan:
         raise ErrorLectorCSV(f"Falta mapear estas columnas obligatorias: {', '.join(faltan)}")
+
+    # La misma columna no puede servir para dos campos a la vez (p.ej.
+    # "Precio" y "Cantidad" apuntando los dos a la columna "Cantidad"
+    # porque el fichero no trae una columna de precio de verdad): eso da
+    # numeros sin sentido en vez de avisar de que falta esa columna.
+    campos_por_columna = defaultdict(list)
+    for campo, columna in mapeo.items():
+        if columna:
+            campos_por_columna[columna].append(campo)
+    columnas_repetidas = {columna: campos for columna, campos in campos_por_columna.items() if len(campos) > 1}
+    if columnas_repetidas:
+        detalles = "; ".join(
+            f"'{columna}' esta asignada a la vez a {' y '.join(campos)}"
+            for columna, campos in columnas_repetidas.items()
+        )
+        raise ErrorLectorCSV(
+            f"No puedes usar la misma columna para varios campos: {detalles}. "
+            f"Si tu fichero no tiene una columna propia para alguno de esos campos, "
+            f"esa operacion no se puede calcular."
+        )
 
     tipos = tipos or TIPOS_POR_DEFECTO
     texto = _texto_completo(ruta_csv, contenido, encoding)
@@ -193,7 +295,7 @@ def leer_operaciones(ruta_csv=None, mapeo=None, tipos=None, preset=None,
     lector.fieldnames = [c.strip() for c in (lector.fieldnames or [])]
     cabeceras = lector.fieldnames
 
-    columnas_del_mapeo = list(mapeo.values())
+    columnas_del_mapeo = [columna for columna in mapeo.values() if columna]
     faltan_en_csv = [columna for columna in columnas_del_mapeo if columna not in cabeceras]
     if faltan_en_csv:
         raise ErrorLectorCSV(
@@ -233,7 +335,7 @@ def leer_operaciones(ruta_csv=None, mapeo=None, tipos=None, preset=None,
 
         if categoria == "dividendo":
             dividendo = {
-                "fecha": fecha.strftime("%d/%m/%Y"),
+                "fecha": _formatear_fecha(fecha),
                 "bruto": Decimal(cantidad) * Decimal(precio),
                 "retencion": Decimal(comision) if comision is not None else Decimal("0"),
             }
@@ -243,7 +345,7 @@ def leer_operaciones(ruta_csv=None, mapeo=None, tipos=None, preset=None,
         divisa = fila[mapeo["divisa"]].strip() if "divisa" in mapeo else ""
 
         operacion = {
-            "fecha": fecha.strftime("%d/%m/%Y"),
+            "fecha": _formatear_fecha(fecha),
             "tipo": categoria,
             "acciones": cantidad,
             "precio_usd": precio,   # nombre historico del campo: precio en la divisa de la operacion

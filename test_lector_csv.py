@@ -16,6 +16,7 @@ from lector_csv import (
     leer_operaciones,
     listar_presets,
     resumir_dividendos,
+    sugerir_mapeo,
 )
 
 RUTA_EJEMPLO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ejemplos", "extracto_generico_ejemplo.csv")
@@ -79,7 +80,7 @@ class TestDetectarCSV(unittest.TestCase):
         self.assertEqual(separador, ";")
         self.assertEqual(cabeceras, ["Fecha", "Tipo", "ISIN", "Cantidad", "Precio", "Moneda", "Comision"])
         self.assertEqual(len(filas_muestra), 3)
-        self.assertEqual(filas_muestra[0][0], "05/01/2024")
+        self.assertEqual(filas_muestra[0][0], "05/01/2025")
 
 
 class TestFormatosDeFecha(unittest.TestCase):
@@ -294,7 +295,7 @@ class TestExtractoDeEjemploPerdidaDosMeses(unittest.TestCase):
         # Verificado a mano: perdida total de la venta = 102.00 EUR.
         # Recompra 6 de las 10 vendidas dentro de los 2 meses -> se
         # bloquea 102.00 * 6/10 = 61.20; declarable = -102.00 + 61.20 = -40.80.
-        # El lote recomprado (20/07/2024) queda con coste 253.00 + 61.20 = 314.20.
+        # El lote recomprado (20/07/2025) queda con coste 253.00 + 61.20 = 314.20.
         operaciones_por_valor, dividendos_por_valor, avisos = leer_operaciones(RUTA_EJEMPLO_PERDIDA, MAPEO_EJEMPLO)
 
         self.assertEqual(avisos, [])
@@ -311,9 +312,70 @@ class TestExtractoDeEjemploPerdidaDosMeses(unittest.TestCase):
         self.assertEqual(len(lotes_finales), 1)
 
         lote = lotes_finales[0]
-        self.assertEqual(lote["fecha"], "20/07/2024")
+        self.assertEqual(lote["fecha"], "20/07/2025")
         coste_total = (lote["coste_accion"] * lote["acciones"]).quantize(Decimal("0.01"))
         self.assertEqual(coste_total, Decimal("314.20"))
+
+
+class TestNoPermiteReutilizarColumna(unittest.TestCase):
+    def test_dos_campos_a_la_misma_columna_da_error_claro(self):
+        # Bug real reportado en produccion: un fichero sin columna de
+        # precio dejaba mapear "Precio" -> "Cantidad" (la misma columna
+        # que ya es "cantidad"), dando numeros sin sentido en vez de
+        # avisar de que falta la columna.
+        mapeo_con_columna_repetida = dict(MAPEO_EJEMPLO, precio="Cantidad")
+
+        with self.assertRaises(ErrorLectorCSV) as contexto:
+            leer_operaciones(RUTA_EJEMPLO, mapeo_con_columna_repetida)
+
+        mensaje = str(contexto.exception)
+        self.assertIn("Cantidad", mensaje)
+        self.assertIn("precio", mensaje)
+        self.assertIn("cantidad", mensaje)
+
+
+class TestSugerirMapeo(unittest.TestCase):
+    def test_cabeceras_casi_identicas_a_los_campos_se_detectan_todas(self):
+        cabeceras = ["Fecha", "Tipo", "ISIN", "Cantidad", "Precio", "Moneda", "Comision"]
+
+        sugerencia = sugerir_mapeo(cabeceras)
+
+        self.assertEqual(sugerencia, {
+            "fecha": "Fecha", "tipo": "Tipo", "valor": "ISIN",
+            "cantidad": "Cantidad", "precio": "Precio",
+            "divisa": "Moneda", "comision": "Comision",
+        })
+
+    def test_tolera_mayusculas_acentos_y_sinonimos(self):
+        cabeceras = ["FECHA OPERACIÓN", "type", "Ticker", "Nº Acciones", "Unit Price", "Currency", "Gastos"]
+
+        sugerencia = sugerir_mapeo(cabeceras)
+
+        self.assertEqual(sugerencia["fecha"], "FECHA OPERACIÓN")
+        self.assertEqual(sugerencia["tipo"], "type")
+        self.assertEqual(sugerencia["valor"], "Ticker")
+        self.assertEqual(sugerencia["cantidad"], "Nº Acciones")
+        self.assertEqual(sugerencia["precio"], "Unit Price")
+        self.assertEqual(sugerencia["divisa"], "Currency")
+        self.assertEqual(sugerencia["comision"], "Gastos")
+
+    def test_cabecera_sin_sinonimo_reconocido_no_se_sugiere(self):
+        cabeceras = ["Fecha", "Tipo", "Columna Rara", "Cantidad", "Precio"]
+
+        sugerencia = sugerir_mapeo(cabeceras)
+
+        self.assertNotIn("valor", sugerencia)   # nada coincide con ISIN/valor/ticker...
+        self.assertEqual(sugerencia["fecha"], "Fecha")
+
+    def test_dos_cabeceras_ambiguas_para_el_mismo_campo_no_se_sugiere_ninguna(self):
+        # "Precio" y "PRECIO " (con espacio) normalizan igual: las dos
+        # coinciden con el sinonimo "precio". Mejor no adivinar a ciegas
+        # que adivinar mal, asi que ese campo se deja para elegir a mano.
+        cabeceras = ["Fecha", "Tipo", "ISIN", "Cantidad", "Precio", "PRECIO "]
+
+        sugerencia = sugerir_mapeo(cabeceras)
+
+        self.assertNotIn("precio", sugerencia)
 
 
 if __name__ == "__main__":

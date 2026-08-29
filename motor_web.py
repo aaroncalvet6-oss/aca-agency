@@ -76,6 +76,7 @@ def procesar_csv(contenido_csv, mapeo, tipos=None):
         "totales": {
           "ganancia_patrimonial": "X.XX" | None,   # None si "completo" es False
           "completo": bool,   # False si algun valor no se pudo calcular
+          "motivo": str | None,   # por que no es "completo"; None si completo=True
         },
       }
     """
@@ -85,7 +86,7 @@ def procesar_csv(contenido_csv, mapeo, tipos=None):
         "avisos_lectura": [],
         "valores": {},
         "dividendos": None,
-        "totales": {"ganancia_patrimonial": None, "completo": True},
+        "totales": {"ganancia_patrimonial": None, "completo": True, "motivo": None},
     }
 
     try:
@@ -95,9 +96,34 @@ def procesar_csv(contenido_csv, mapeo, tipos=None):
     except lector_csv.ErrorLectorCSV as error:
         resultado["error_lectura"] = str(error)
         resultado["totales"]["completo"] = False
+        resultado["totales"]["motivo"] = str(error)
         return resultado
 
     resultado["avisos_lectura"] = avisos
+
+    # Si no se ha leido ninguna compraventa (todas las filas se han
+    # ignorado, o el fichero no traia ninguna), NO hay nada que calcular.
+    # Mostrar "0.00 €" aqui seria un numero con aspecto de valido cuando en
+    # realidad no se ha procesado nada: mejor decir claramente que no se
+    # ha podido calcular, con el numero de avisos como pista del motivo.
+    if not operaciones_por_valor:
+        resultado["totales"]["completo"] = False
+        resultado["totales"]["motivo"] = (
+            "No se ha podido leer ninguna compra o venta de este fichero "
+            f"({len(avisos)} fila(s) ignorada(s)); revisa el mapeo de columnas."
+            if avisos else
+            "El fichero no tiene ninguna compra o venta que calcular."
+        )
+        resumen_dividendos = lector_csv.resumir_dividendos(dividendos_por_valor)
+        resultado["dividendos"] = {
+            "bruto_total": _dinero(resumen_dividendos["bruto_total"]),
+            "retencion_total": _dinero(resumen_dividendos["retencion_total"]),
+            "por_valor": {
+                valor: {"bruto": _dinero(datos["bruto"]), "retencion": _dinero(datos["retencion"])}
+                for valor, datos in resumen_dividendos["por_valor"].items()
+            },
+        }
+        return resultado
 
     ganancia_total = Decimal("0")
     algun_error = False
@@ -151,5 +177,10 @@ def procesar_csv(contenido_csv, mapeo, tipos=None):
     # Si algun valor fallo, el total NO se calcula sumando solo lo que
     # salio bien: eso seria un numero a medias disfrazado de total.
     resultado["totales"]["ganancia_patrimonial"] = None if algun_error else _dinero(ganancia_total)
+    if algun_error:
+        n_errores = sum(1 for v in resultado["valores"].values() if v["error"])
+        resultado["totales"]["motivo"] = (
+            f"{n_errores} valor(es) no se han podido calcular (mira el detalle de cada uno)."
+        )
 
     return resultado

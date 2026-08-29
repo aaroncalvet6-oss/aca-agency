@@ -86,6 +86,42 @@ class TestProcesarCSV(unittest.TestCase):
         self.assertIsNone(resultado["totales"]["ganancia_patrimonial"])
         self.assertEqual(resultado["valores"], {})
 
+    def test_ninguna_operacion_leida_no_muestra_0_00_como_si_fuera_valido(self):
+        # Bug real reportado en producción: un mapeo que hace que TODAS las
+        # filas se ignoren (p.ej. "Precio" apuntando a una columna con
+        # texto no numerico) no da error_lectura -- lector_csv simplemente
+        # acaba con operaciones_por_valor vacio y todo en avisos. Antes de
+        # este fix, eso se traducia en "ganancia_patrimonial": "0.00" con
+        # completo=True: un cero con pinta de resultado valido cuando en
+        # realidad no se ha calculado nada.
+        contenido = (
+            "Fecha;Tipo;ISIN;Cantidad;Precio;Moneda;Comision\n"
+            "10/01/2024;Compra;IE00B4L5Y983;10;no-es-un-numero;EUR;1\n"
+        )
+
+        with FRESCURA_FIJA:
+            resultado = procesar_csv(contenido, MAPEO_EJEMPLO)
+
+        self.assertIsNone(resultado["error_lectura"])   # el mapeo en si es valido
+        self.assertEqual(len(resultado["avisos_lectura"]), 1)
+        self.assertEqual(resultado["valores"], {})
+        self.assertFalse(resultado["totales"]["completo"])
+        self.assertIsNone(resultado["totales"]["ganancia_patrimonial"])
+        self.assertIsNotNone(resultado["totales"]["motivo"])
+
+    def test_fichero_solo_con_dividendos_no_muestra_0_00_como_si_fuera_valido(self):
+        contenido = (
+            "Fecha;Tipo;ISIN;Cantidad;Precio;Moneda;Comision\n"
+            "10/01/2024;Dividendo;IE00B4L5Y983;10;1.00;EUR;1.90\n"
+        )
+
+        with FRESCURA_FIJA:
+            resultado = procesar_csv(contenido, MAPEO_EJEMPLO)
+
+        self.assertFalse(resultado["totales"]["completo"])
+        self.assertIsNone(resultado["totales"]["ganancia_patrimonial"])
+        self.assertEqual(resultado["dividendos"]["bruto_total"], "10.00")   # los dividendos SI se calculan
+
     def test_valor_sin_tipo_de_cambio_todavia_no_da_numero_a_medias(self):
         contenido = (
             "Fecha;Tipo;ISIN;Cantidad;Precio;Moneda;Comision\n"

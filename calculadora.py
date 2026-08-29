@@ -87,6 +87,20 @@ def _a_fecha(fecha_str):
     return date(ANIO_BASE, mes, dia)
 
 
+def _fecha_para_ordenar(fecha_str):
+    """Fecha real (con anio si lo trae) solo para ordenar cronologicamente.
+    A diferencia de _a_fecha, SI usa el anio cuando esta disponible: un
+    FIFO real puede tener lotes de hace varios anios, así que ignorar el
+    anio (como hace _a_fecha para la ventana de los 2 meses) daria un
+    orden erroneo entre anios distintos."""
+    partes = fecha_str.split("/")
+    if len(partes) == 3:
+        dia, mes, anio = (int(parte) for parte in partes)
+        return date(anio, mes, dia)
+    dia, mes = (int(parte) for parte in partes[:2])
+    return date(ANIO_BASE, mes, dia)
+
+
 def _sumar_meses(fecha, meses):
     mes_indice = fecha.month - 1 + meses
     anio = fecha.year + mes_indice // 12
@@ -95,27 +109,31 @@ def _sumar_meses(fecha, meses):
     return date(anio, mes, dia)
 
 
-def _buscar_recompras_en_ventana(operaciones, venta):
-    """Indices de TODAS las compras del mismo valor en los 2 meses antes/despues de la venta.
-
-    Simplificacion asumida (valida para los casos de prueba actuales): no
-    distingue si alguna de esas compras es la misma que se esta liquidando
-    en esta venta. Anadir un caso de prueba que ejercite eso antes de
-    confiar en el resultado para ese escenario.
+def _buscar_recompras_en_ventana(operaciones, idx_venta, origenes_de_esta_venta):
+    """Indices de las compras del mismo valor en los 2 meses antes/despues
+    de la venta, EXCLUYENDO las que han alimentado por FIFO esta misma
+    venta (origenes_de_esta_venta): esas acciones se estan liquidando en
+    esta transmision, no representan continuidad de la posicion, asi que
+    no cuentan como "recompra" a efectos de esta venta. Si ademas se
+    compraron de verdad mas acciones en la ventana, esas si cuentan.
     """
+    venta = operaciones[idx_venta]
     fecha_venta = _a_fecha(venta["fecha"])
     inicio = _sumar_meses(fecha_venta, -MESES_REGLA_DOS_MESES)
     fin = _sumar_meses(fecha_venta, MESES_REGLA_DOS_MESES)
 
     return [
         idx for idx, op in enumerate(operaciones)
-        if op["tipo"] == "compra" and inicio <= _a_fecha(op["fecha"]) <= fin
+        if op["tipo"] == "compra"
+        and idx not in origenes_de_esta_venta
+        and inicio <= _a_fecha(op["fecha"]) <= fin
     ]
 
 
 def _fifo_consumir(lotes, cantidad, fecha_venta, imprimir_traza):
     coste = Decimal("0")
     por_vender = _decimal(cantidad)
+    origenes_consumidos = set()   # indices de las compras de las que ha salido esta venta
 
     # FIFO: vamos comiendo los lotes mas antiguos primero
     while por_vender > 0:
@@ -128,6 +146,7 @@ def _fifo_consumir(lotes, cantidad, fecha_venta, imprimir_traza):
         coste += cogidas * lote["coste_accion"]
         lote["acciones"] -= cogidas
         por_vender -= cogidas
+        origenes_consumidos.add(lote["origen_idx"])
 
         if imprimir_traza:
             print(f"  venta {fecha_venta}: coge {cogidas} acciones del lote del {lote['fecha']}")
@@ -135,13 +154,14 @@ def _fifo_consumir(lotes, cantidad, fecha_venta, imprimir_traza):
         if lote["acciones"] == 0:
             lotes.pop(0)   # lote agotado, fuera
 
-    return coste
+    return coste, origenes_consumidos
 
 
 def _simular(operaciones, perdida_bloqueada_por_venta, coste_extra_por_compra, imprimir_traza):
-    lotes = []       # cada lote: acciones que LE QUEDAN y lo que costo cada accion
+    lotes = []       # cada lote: acciones que LE QUEDAN, su coste y de que operacion viene (origen_idx)
     ganancia = Decimal("0")
     resultados_venta = {}   # indice de la operacion -> resultado (ganancia o perdida) de esa venta
+    origenes_por_venta = {}   # indice de la venta -> {indices de las compras que la alimentaron por FIFO}
     detalle_ventas = []     # una fila por venta, en orden, para el desglose operacion a operacion
 
     for idx, op in enumerate(operaciones):
@@ -155,12 +175,14 @@ def _simular(operaciones, perdida_bloqueada_por_venta, coste_extra_por_compra, i
                 "acciones": acciones,
                 # el coste por accion NO se redondea: no es dinero, es un calculo intermedio
                 "coste_accion": total_eur / acciones,
+                "origen_idx": idx,
             })
 
         else:
-            coste_vendido = _fifo_consumir(lotes, op["acciones"], op["fecha"], imprimir_traza)
+            coste_vendido, origenes = _fifo_consumir(lotes, op["acciones"], op["fecha"], imprimir_traza)
             resultado_venta = total_eur - coste_vendido
             resultados_venta[idx] = resultado_venta
+            origenes_por_venta[idx] = origenes
 
             bloqueado = perdida_bloqueada_por_venta.get(idx, Decimal("0"))
             resultado_declarado = resultado_venta + bloqueado
@@ -178,10 +200,10 @@ def _simular(operaciones, perdida_bloqueada_por_venta, coste_extra_por_compra, i
                       f"(regla de los 2 meses, art. 33.5.f LIRPF); queda una perdida declarable "
                       f"de {resultado_declarado:.2f}")
 
-    return ganancia, resultados_venta, lotes, detalle_ventas
+    return ganancia, resultados_venta, lotes, detalle_ventas, origenes_por_venta
 
 
-def _aplicar_regla_dos_meses(operaciones, resultados_venta):
+def _aplicar_regla_dos_meses(operaciones, resultados_venta, origenes_por_venta):
     """A partir de los resultados brutos (pasada 1), calcula que parte de
     cada perdida se bloquea (art. 33.5.f LIRPF) y a que lotes recomprados
     se les suma. Ver calcular_detalle() para el porque de cada paso."""
@@ -192,7 +214,7 @@ def _aplicar_regla_dos_meses(operaciones, resultados_venta):
         if resultado >= 0:
             continue
 
-        idxs_recompra = _buscar_recompras_en_ventana(operaciones, operaciones[idx])
+        idxs_recompra = _buscar_recompras_en_ventana(operaciones, idx, origenes_por_venta[idx])
         if not idxs_recompra:
             continue
 
@@ -218,26 +240,39 @@ def calcular_desglose(operaciones):
 
     Devuelve (ganancia, lotes_finales, detalle_ventas), con
     detalle_ventas = [{"fecha", "resultado_bruto", "bloqueado",
-    "resultado_declarado"}, ...] en el mismo orden que las ventas del
-    fichero de entrada.
+    "resultado_declarado"}, ...] en el mismo orden CRONOLOGICO (no
+    necesariamente el orden de entrada, ver mas abajo).
     """
+    # El FIFO tiene que consumir por fecha, no por el orden en que vienen
+    # las operaciones: un fichero desordenado no debe dar un resultado
+    # incorrecto en silencio. lector_csv.py ya entrega todo ordenado, pero
+    # esto es defensa en profundidad para cualquiera que llame a esta
+    # funcion directamente con una lista sin ordenar. sorted() es estable:
+    # si dos operaciones tienen la misma fecha, se respeta el orden en que
+    # vinieron (p.ej. una compra y una venta el mismo dia).
+    operaciones = sorted(operaciones, key=lambda op: _fecha_para_ordenar(op["fecha"]))
+
     # Pasada 1: FIFO normal, sin aplicar todavia la regla de los 2 meses,
-    # solo para saber que ventas dan perdida y de cuanto.
-    _, resultados_venta, _, _ = _simular(operaciones, perdida_bloqueada_por_venta={}, coste_extra_por_compra={},
-                                          imprimir_traza=False)
+    # solo para saber que ventas dan perdida y de cuanto, y de que compras
+    # ha salido cada venta (para no contarlas luego como "recompra" de si
+    # mismas: esas acciones se estan liquidando, no son continuidad).
+    _, resultados_venta, _, _, origenes_por_venta = _simular(
+        operaciones, perdida_bloqueada_por_venta={}, coste_extra_por_compra={}, imprimir_traza=False)
 
     # Para cada perdida, se suman las acciones de TODAS las compras del
-    # mismo valor en la ventana de los 2 meses (antes o despues). Se
-    # bloquea la parte de la perdida proporcional a esas acciones
-    # recompradas en conjunto (el resto se declara con normalidad), y ese
-    # importe se reparte entre los lotes recomprados en proporcion a sus
-    # propias acciones. Nunca se aplica a ganancias.
-    perdida_bloqueada_por_venta, coste_extra_por_compra = _aplicar_regla_dos_meses(operaciones, resultados_venta)
+    # mismo valor en la ventana de los 2 meses (antes o despues), salvo las
+    # que hayan alimentado esta misma venta. Se bloquea la parte de la
+    # perdida proporcional a esas acciones recompradas en conjunto (el
+    # resto se declara con normalidad), y ese importe se reparte entre los
+    # lotes recomprados en proporcion a sus propias acciones. Nunca se
+    # aplica a ganancias.
+    perdida_bloqueada_por_venta, coste_extra_por_compra = _aplicar_regla_dos_meses(
+        operaciones, resultados_venta, origenes_por_venta)
 
     # Pasada 2: FIFO definitivo, ya con la parte bloqueada de cada perdida
     # neutralizada y sumada al coste del lote recomprado correspondiente.
-    ganancia, _, lotes_finales, detalle_ventas = _simular(operaciones, perdida_bloqueada_por_venta,
-                                                           coste_extra_por_compra, imprimir_traza=True)
+    ganancia, _, lotes_finales, detalle_ventas, _ = _simular(operaciones, perdida_bloqueada_por_venta,
+                                                              coste_extra_por_compra, imprimir_traza=True)
 
     return ganancia, lotes_finales, detalle_ventas
 

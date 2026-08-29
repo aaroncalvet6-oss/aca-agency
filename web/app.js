@@ -16,6 +16,8 @@ const FICHEROS_MOTOR = [
   "presets_broker.json",
 ];
 const RUTA_CACHE_BCE = "cache/eurofxref-hist.xml";
+const CLAVE_LOCALSTORAGE_PRESETS = "fifo-renta:presets_broker";
+const PREFIJO_LOCALSTORAGE_MAPEO = "fifo-renta:mapeo:";
 
 const CAMPOS_OBLIGATORIOS = ["fecha", "tipo", "valor", "cantidad", "precio"];
 const CAMPOS_OPCIONALES = ["divisa", "comision"];
@@ -76,10 +78,18 @@ async function cargarMotor() {
     pyodide = await loadPyodide();
 
     for (const nombre of FICHEROS_MOTOR) {
+      if (nombre === "presets_broker.json") continue;   // se trata aparte: puede venir de localStorage
       const respuesta = await fetch(`motor/${nombre}`);
       if (!respuesta.ok) throw new Error(`HTTP ${respuesta.status} al pedir motor/${nombre}`);
       pyodide.FS.writeFile(nombre, await respuesta.text());
     }
+
+    // El fichero de presets que se sirve con la web es solo el punto de
+    // partida. Pyodide corre en un filesystem en memoria que se pierde al
+    // recargar la página, así que si el usuario ya ha guardado presets en
+    // este navegador, se restauran desde localStorage en vez de pisarlos
+    // con el fichero por defecto.
+    pyodide.FS.writeFile("presets_broker.json", await cargarPresetsIniciales());
 
     lectorCsv = pyodide.pyimport("lector_csv");
     motorWeb = pyodide.pyimport("motor_web");
@@ -119,6 +129,57 @@ async function cargarTiposBCE() {
       "las de otras divisas no se podrán calcular hasta que esto se resuelva. " +
       `<br><span class="texto-pequeno">${escaparHtml(error.message || String(error))}</span>`;
     mostrar(contenedor);
+  }
+}
+
+async function cargarPresetsIniciales() {
+  try {
+    const guardado = localStorage.getItem(CLAVE_LOCALSTORAGE_PRESETS);
+    if (guardado) return guardado;
+  } catch (error) {
+    console.warn("No se han podido leer los presets guardados en este navegador:", error);
+  }
+  const respuesta = await fetch("motor/presets_broker.json");
+  return respuesta.ok ? await respuesta.text() : "{}";
+}
+
+function guardarPresetsEnLocalStorage() {
+  try {
+    const contenido = pyodide.FS.readFile("presets_broker.json", { encoding: "utf8" });
+    localStorage.setItem(CLAVE_LOCALSTORAGE_PRESETS, contenido);
+  } catch (error) {
+    console.warn("No se ha podido recordar el preset en este navegador:", error);
+  }
+}
+
+// --- Recordar el ultimo mapeo usado para unas mismas cabeceras ---------
+//
+// Ademas de los presets con nombre (guardados explicitamente), se recuerda
+// sin que el usuario tenga que hacer nada el ultimo mapeo que funciono
+// para un fichero con exactamente estas cabeceras (mismo nombre de
+// columnas, en cualquier orden), para no obligar a repetirlo si se sube
+// otro extracto del mismo broker.
+
+function claveMapeoLocal(cabeceras) {
+  const huella = [...cabeceras].map((c) => c.trim().toLowerCase()).sort().join("||");
+  return PREFIJO_LOCALSTORAGE_MAPEO + huella;
+}
+
+function recordarMapeoLocal(cabeceras, mapeo) {
+  try {
+    localStorage.setItem(claveMapeoLocal(cabeceras), JSON.stringify(mapeo));
+  } catch (error) {
+    console.warn("No se ha podido recordar el mapeo en este navegador:", error);
+  }
+}
+
+function mapeoRecordadoLocal(cabeceras) {
+  try {
+    const guardado = localStorage.getItem(claveMapeoLocal(cabeceras));
+    return guardado ? JSON.parse(guardado) : null;
+  } catch (error) {
+    console.warn("No se ha podido leer el mapeo recordado de este navegador:", error);
+    return null;
   }
 }
 
@@ -212,11 +273,57 @@ function detectarYPreparearMapeo() {
 
   pintarTablaMapeo(cabeceras);
   pintarTablaMuestra(cabeceras, filasMuestra);
-  sugerirPreset(cabeceras);
   pintarSelectorPresets();
+  aplicarAutoDeteccion(cabeceras);
 
   mostrar(el("zona-mapeo"));
   actualizarBotonCalcular();
+}
+
+// Encuentra el mapeo de columnas sin que el usuario tenga que elegirlas a
+// mano, probando por este orden (el primero que encaja gana):
+//   1. Un mapeo recordado de un fichero anterior con las mismas cabeceras.
+//   2. Un preset guardado (con nombre) cuyas columnas existan todas aqui.
+//   3. Adivinar cada campo por el nombre de su cabecera (sugerir_mapeo),
+//      tolerando mayusculas/acentos/sinonimos habituales. Puede acertar
+//      solo alguno de los campos: el resto se deja para elegir a mano.
+function aplicarAutoDeteccion(cabeceras) {
+  const avisoPreset = el("preset-sugerido");
+  const avisoAuto = el("mapeo-auto-detectado");
+  ocultar(avisoPreset);
+  ocultar(avisoAuto);
+
+  const recordado = mapeoRecordadoLocal(cabeceras);
+  if (recordado) {
+    aplicarMapeoAlFormulario(recordado);
+    avisoAuto.textContent = "Hemos recordado el mapeo que usaste la última vez con estas mismas cabeceras. Puedes cambiar cualquier columna si no es correcto.";
+    mostrar(avisoAuto);
+    return;
+  }
+
+  const cabecerasSet = new Set(cabeceras);
+  const presetQueEncaja = obtenerPresets().find((preset) =>
+    Object.values(preset.mapeo).every((columna) => cabecerasSet.has(columna))
+  );
+  if (presetQueEncaja) {
+    aplicarMapeoAlFormulario(presetQueEncaja.mapeo);
+    avisoPreset.textContent = `Este fichero encaja con el preset "${presetQueEncaja.nombre}": lo hemos preseleccionado. Puedes cambiar cualquier columna si no es correcto.`;
+    mostrar(avisoPreset);
+    setTimeout(() => { el("select-preset").value = presetQueEncaja.nombre; }, 0);
+    return;
+  }
+
+  const sugerenciaPy = lectorCsv.sugerir_mapeo(pyodide.toPy(cabeceras));
+  const sugerencia = sugerenciaPy.toJs({ dict_converter: Object.fromEntries });
+  sugerenciaPy.destroy();
+
+  const nDetectados = Object.keys(sugerencia).length;
+  if (nDetectados > 0) {
+    aplicarMapeoAlFormulario(sugerencia);
+    const totalCampos = CAMPOS_OBLIGATORIOS.length + CAMPOS_OPCIONALES.length;
+    avisoAuto.textContent = `Hemos detectado automáticamente ${nDetectados} de ${totalCampos} columnas por el nombre de la cabecera. Revisa y completa el resto.`;
+    mostrar(avisoAuto);
+  }
 }
 
 function pintarTablaMapeo(cabeceras) {
@@ -301,25 +408,6 @@ function aplicarMapeoAlFormulario(mapeo) {
   actualizarBotonCalcular();
 }
 
-function sugerirPreset(cabeceras) {
-  const cabecerasSet = new Set(cabeceras);
-  const presets = obtenerPresets();
-
-  const encaja = presets.find((preset) =>
-    Object.values(preset.mapeo).every((columna) => cabecerasSet.has(columna))
-  );
-
-  const aviso = el("preset-sugerido");
-  if (encaja) {
-    aplicarMapeoAlFormulario(encaja.mapeo);
-    aviso.textContent = `Este fichero encaja con el preset "${encaja.nombre}": lo hemos preseleccionado. Puedes cambiar cualquier columna si no es correcto.`;
-    mostrar(aviso);
-    setTimeout(() => { el(`select-preset`).value = encaja.nombre; }, 0);
-  } else {
-    ocultar(aviso);
-  }
-}
-
 function pintarSelectorPresets() {
   const select = el("select-preset");
   select.innerHTML = '<option value="">— Elegir columnas a mano —</option>';
@@ -358,6 +446,27 @@ function actualizarBotonCalcular() {
 
 el("boton-calcular").addEventListener("click", calcular);
 
+el("boton-guardar-preset").addEventListener("click", () => {
+  ocultarError();
+  const nombre = el("input-nombre-preset").value.trim();
+  if (!nombre) { mostrarError("Escribe un nombre para guardar el preset."); return; }
+
+  const mapeo = leerMapeoDelFormulario();
+  if (!mapeo) { mostrarError("Completa antes las columnas obligatorias (*) para poder guardar el preset."); return; }
+
+  try {
+    lectorCsv.guardar_preset(nombre, pyodide.toPy(new Map(Object.entries(mapeo))));
+  } catch (error) {
+    mostrarError(`No se ha podido guardar el preset: ${mensajeDeErrorPython(error)}`);
+    return;
+  }
+
+  guardarPresetsEnLocalStorage();
+  el("input-nombre-preset").value = "";
+  pintarSelectorPresets();
+  el("select-preset").value = nombre;
+});
+
 // --- Paso 3: calcular y mostrar resultados -----------------------------
 
 function calcular() {
@@ -385,6 +494,11 @@ function calcular() {
     return;
   }
 
+  // El mapeo ha funcionado (aunque algun valor concreto falle despues por
+  // otro motivo, p.ej. tipo de cambio no disponible): lo recordamos para
+  // no obligar a repetirlo si se sube otro fichero con estas cabeceras.
+  recordarMapeoLocal(cabecerasActuales, mapeo);
+
   pintarResultado(resultado);
   mostrar(el("zona-resultado"));
 }
@@ -401,7 +515,7 @@ function pintarResultado(resultado) {
 
 function pintarTotales(resultado) {
   const contenedor = el("totales");
-  const { completo, ganancia_patrimonial } = resultado.totales;
+  const { completo, ganancia_patrimonial, motivo } = resultado.totales;
 
   if (completo) {
     const negativo = ganancia_patrimonial.trim().startsWith("-");
@@ -411,17 +525,13 @@ function pintarTotales(resultado) {
       <p class="total-secundario">Suma del FIFO de todos los valores del fichero, ya aplicada la regla de los 2 meses.</p>
     `;
   } else {
-    const nValoresConError = Object.values(resultado.valores).filter((v) => v.error).length;
-    const texto = nValoresConError === 1
-      ? "Hay 1 valor que no se ha podido calcular"
-      : `Hay ${nValoresConError} valores que no se han podido calcular`;
+    // Nunca se muestra un importe aqui (ni "0.00 €"): si no es
+    // "completo" es que no hay un total fiable que mostrar, y un numero
+    // con pinta de valido induciria a pensar que ya esta calculado.
     contenedor.innerHTML = `
       <h2>Ganancia patrimonial total</h2>
-      <p class="total-principal">No calculable todavía</p>
-      <p class="total-secundario">
-        ${texto} (mira el detalle más abajo).
-        No se muestra un total parcial para no dar un número equivocado.
-      </p>
+      <p class="total-principal">No se ha podido calcular</p>
+      <p class="total-secundario">${escaparHtml(motivo || "Revisa los avisos y el detalle de cada valor más abajo.")}</p>
     `;
   }
 }

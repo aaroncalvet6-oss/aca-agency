@@ -82,6 +82,22 @@ CASOS = [
         ],
         "esperado": "137.67",
     },
+    {
+        # Bug real encontrado en producción: la compra que alimenta por FIFO
+        # la propia venta (15/05) cae dentro de la ventana de 2 meses de esa
+        # misma venta (10/07 ± 2 meses = [10/05, 10/09]). Antes del fix,
+        # _buscar_recompras_en_ventana la contaba como "recompra" de sí
+        # misma, inflando el bloqueo al 100% en vez del 60% real (solo la
+        # compra del 20/07 es una recompra de verdad). Ver TestAutoRecompra
+        # para las aserciones detalladas (bruto/bloqueado/lote).
+        "nombre": "no_cuenta_como_recompra_la_compra_que_alimenta_la_propia_venta",
+        "operaciones": [
+            {"fecha": "15/05/2024", "tipo": "compra", "acciones": 10, "precio_usd": 50.00, "comision_eur": 1.00, "divisa": "EUR"},
+            {"fecha": "10/07/2024", "tipo": "venta",  "acciones": 10, "precio_usd": 40.00, "comision_eur": 1.00, "divisa": "EUR"},
+            {"fecha": "20/07/2024", "tipo": "compra", "acciones": 6,  "precio_usd": 42.00, "comision_eur": 1.00, "divisa": "EUR"},
+        ],
+        "esperado": "-40.80",
+    },
     # Añade aqui nuevos casos:
     # {
     #     "nombre": "nombre_descriptivo_del_caso",
@@ -266,6 +282,73 @@ class TestCalcularDesglose(unittest.TestCase):
         self.assertEqual(f"{fila['resultado_bruto']:.2f}", "-302.00")
         self.assertEqual(f"{fila['bloqueado']:.2f}", "120.80")
         self.assertEqual(f"{fila['resultado_declarado']:.2f}", "-181.20")
+
+
+class TestAutoRecompra(unittest.TestCase):
+    """Bug real reportado en producción: la compra que alimenta por FIFO la
+    venta que se está evaluando cae dentro de la ventana de 2 meses de esa
+    misma venta, y se contaba a sí misma como "recompra". La web daba
+    bruto -165.75 / bloqueado 102.00 / declarado -63.75; el valor correcto
+    (verificado a mano) es bruto -102.00 / bloqueado 61.20 / declarado -40.80."""
+
+    OPERACIONES = [
+        {"fecha": "15/05/2024", "tipo": "compra", "acciones": 10, "precio_usd": 50.00, "comision_eur": 1.00, "divisa": "EUR"},
+        {"fecha": "10/07/2024", "tipo": "venta",  "acciones": 10, "precio_usd": 40.00, "comision_eur": 1.00, "divisa": "EUR"},
+        {"fecha": "20/07/2024", "tipo": "compra", "acciones": 6,  "precio_usd": 42.00, "comision_eur": 1.00, "divisa": "EUR"},
+    ]
+
+    def test_bruto_bloqueado_y_declarado(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            ganancia, lotes_finales, detalle_ventas = calcular_desglose(self.OPERACIONES)
+
+        fila = detalle_ventas[0]
+        self.assertEqual(f"{fila['resultado_bruto']:.2f}", "-102.00")
+        self.assertEqual(f"{fila['bloqueado']:.2f}", "61.20")
+        self.assertEqual(f"{fila['resultado_declarado']:.2f}", "-40.80")
+        self.assertEqual(f"{ganancia:.2f}", "-40.80")
+
+    def test_lote_recomprado_de_verdad_queda_con_coste_314_20(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            _, lotes_finales, _ = calcular_desglose(self.OPERACIONES)
+
+        self.assertEqual(len(lotes_finales), 1)
+        lote = lotes_finales[0]
+        self.assertEqual(lote["fecha"], "20/07/2024")
+        coste_total = (lote["coste_accion"] * lote["acciones"]).quantize(Decimal("0.01"))
+        self.assertEqual(coste_total, Decimal("314.20"))
+
+
+class TestFIFORespetaFechaNoOrdenDelFichero(unittest.TestCase):
+    """El FIFO tiene que consumir por fecha parseada, no por el orden en
+    que aparecen las filas. Antes de este fix, calcular_detalle() confiaba
+    en que el llamador ya viniera ordenado (lector_csv.py sí ordena, pero
+    llamar a calcular_detalle()/calcular_desglose() directamente con una
+    lista desordenada explotaba con "vendes mas acciones de las que
+    tienes", o peor, podia dar un resultado incorrecto sin avisar si las
+    cantidades cuadraban por casualidad). Este test da las operaciones
+    deliberadamente desordenadas (la compra más antigua es la ÚLTIMA de la
+    lista) y comprueba que el resultado es el mismo que si vinieran en
+    orden."""
+
+    def test_orden_de_entrada_no_afecta_al_resultado(self):
+        operaciones_ordenadas = [
+            {"fecha": "15/01/2024", "tipo": "compra", "acciones": 10, "precio_usd": 100, "comision_eur": 1, "divisa": "EUR"},
+            {"fecha": "20/03/2024", "tipo": "compra", "acciones": 5,  "precio_usd": 120, "comision_eur": 1, "divisa": "EUR"},
+            {"fecha": "10/09/2024", "tipo": "venta",  "acciones": 12, "precio_usd": 150, "comision_eur": 1, "divisa": "EUR"},
+        ]
+        operaciones_desordenadas = [
+            operaciones_ordenadas[2],   # la venta primero
+            operaciones_ordenadas[1],   # la compra mas reciente segunda
+            operaciones_ordenadas[0],   # la compra mas antigua la ultima
+        ]
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            ganancia_ordenada, lotes_ordenados = calcular_detalle(operaciones_ordenadas)
+        with contextlib.redirect_stdout(io.StringIO()):
+            ganancia_desordenada, lotes_desordenados = calcular_detalle(operaciones_desordenadas)
+
+        self.assertEqual(ganancia_ordenada, ganancia_desordenada)
+        self.assertEqual(lotes_ordenados, lotes_desordenados)
 
 
 if __name__ == "__main__":
