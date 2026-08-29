@@ -207,6 +207,57 @@ class TestCambioManualOBCE(unittest.TestCase):
             a_euros(op)
 
 
+class TestComisionEnDivisaDeLaOperacion(unittest.TestCase):
+    """La comision (op["comision_eur"]) se asume en EUR por defecto. Si
+    op["comision_en_divisa_operacion"] es verdadero, se convierte con el
+    MISMO tipo (y la misma fecha) que el importe principal -- nunca uno
+    distinto ni una llamada aparte al BCE."""
+
+    def test_por_defecto_la_comision_se_suma_tal_cual_sin_convertir(self):
+        # Si los 11 se trataran como USD y se convirtieran, darian
+        # exactamente 10.00 EUR (11 / 1.10): por defecto NO se convierten,
+        # asi que el resultado tiene que reflejar 11.00, no 10.00.
+        op = {
+            "fecha": "15/01/2024", "tipo": "compra", "acciones": 10, "precio_usd": 100,
+            "divisa": "USD", "cambio": 1.10, "comision_eur": 11,
+        }
+        self.assertEqual(a_euros(op), Decimal("920.09"))   # 909.09 (1000/1.10) + 11.00
+
+    def test_con_la_opcion_activada_la_comision_se_convierte_con_el_mismo_tipo(self):
+        op = {
+            "fecha": "15/01/2024", "tipo": "compra", "acciones": 10, "precio_usd": 100,
+            "divisa": "USD", "cambio": 1.10, "comision_eur": 11,
+            "comision_en_divisa_operacion": True,
+        }
+        self.assertEqual(a_euros(op), Decimal("919.09"))   # 909.09 + (11 / 1.10 = 10.00)
+
+    def test_en_una_venta_la_comision_convertida_tambien_resta(self):
+        op = {
+            "fecha": "20/03/2024", "tipo": "venta", "acciones": 10, "precio_usd": 100,
+            "divisa": "USD", "cambio": 1.10, "comision_eur": 11,
+            "comision_en_divisa_operacion": True,
+        }
+        self.assertEqual(a_euros(op), Decimal("899.09"))   # 909.09 - 10.00
+
+    def test_usa_el_mismo_tipo_que_el_importe_no_una_consulta_aparte(self):
+        op = {
+            "fecha": "15/01/2024", "tipo": "compra", "acciones": 10, "precio_usd": 100,
+            "divisa": "USD", "comision_eur": 11, "comision_en_divisa_operacion": True,
+        }
+        with patch("calculadora.tipos_cambio.obtener_tipo_cambio", return_value=1.10) as mock_bce:
+            total = a_euros(op)
+
+        mock_bce.assert_called_once()   # una sola consulta al BCE, reutilizada para importe y comision
+        self.assertEqual(total, Decimal("919.09"))
+
+    def test_en_eur_la_opcion_no_tiene_ningun_efecto(self):
+        # No hay tipo de cambio que aplicar en una operacion ya en EUR.
+        op_normal = {"fecha": "10/01/2024", "tipo": "compra", "acciones": 2, "precio_usd": 50, "comision_eur": 1, "divisa": "EUR"}
+        op_con_opcion = dict(op_normal, comision_en_divisa_operacion=True)
+
+        self.assertEqual(a_euros(op_normal), a_euros(op_con_opcion))
+
+
 class TestEuroYPrecisionDecimal(unittest.TestCase):
     def test_eur_no_convierte_ni_llama_al_bce(self):
         op = {"fecha": "10/01/2024", "tipo": "compra", "acciones": 2, "precio_usd": 50, "comision_eur": 1, "divisa": "EUR"}

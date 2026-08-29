@@ -86,7 +86,7 @@ def _anios_de_dividendos(dividendos_por_valor):
     return {d["fecha"].split("/")[-1] for divs in dividendos_por_valor.values() for d in divs}
 
 
-def procesar_csvs_multi(ficheros, mapeo, tipos=None):
+def procesar_csvs_multi(ficheros, mapeo, tipos=None, comision_en_divisa_operacion=False):
     resultado = {
         "frescura_bce": motor_web.info_frescura_bce(),
         "error_lectura": None,
@@ -107,7 +107,10 @@ def procesar_csvs_multi(ficheros, mapeo, tipos=None):
 
     for nombre, contenido in ficheros:
         try:
-            ops, divs, avisos = lector_csv.leer_operaciones(contenido=contenido, mapeo=mapeo, tipos=tipos)
+            ops, divs, avisos = lector_csv.leer_operaciones(
+                contenido=contenido, mapeo=mapeo, tipos=tipos,
+                comision_en_divisa_operacion=comision_en_divisa_operacion,
+            )
         except lector_csv.ErrorLectorCSV as error:
             mensaje = f"{nombre}: {error}" if varios else str(error)
             resultado["error_lectura"] = mensaje
@@ -409,9 +412,9 @@ function claveMapeoLocal(cabeceras) {
   return PREFIJO_LOCALSTORAGE_MAPEO + huella;
 }
 
-function recordarMapeoLocal(cabeceras, mapeo) {
+function recordarMapeoLocal(cabeceras, mapeo, comisionEnDivisaOperacion) {
   try {
-    localStorage.setItem(claveMapeoLocal(cabeceras), JSON.stringify(mapeo));
+    localStorage.setItem(claveMapeoLocal(cabeceras), JSON.stringify({ mapeo, comisionEnDivisaOperacion }));
   } catch (error) {
     console.warn("No se ha podido recordar el mapeo en este navegador:", error);
   }
@@ -420,7 +423,11 @@ function recordarMapeoLocal(cabeceras, mapeo) {
 function mapeoRecordadoLocal(cabeceras) {
   try {
     const guardado = localStorage.getItem(claveMapeoLocal(cabeceras));
-    return guardado ? JSON.parse(guardado) : null;
+    if (!guardado) return null;
+    const datos = JSON.parse(guardado);
+    // Formato antiguo (de antes de recordar la divisa de la comision): el
+    // valor guardado era el mapeo a secas, sin envoltorio.
+    return datos && datos.mapeo ? datos : { mapeo: datos, comisionEnDivisaOperacion: false };
   } catch (error) {
     console.warn("No se ha podido leer el mapeo recordado de este navegador:", error);
     return null;
@@ -517,6 +524,7 @@ function pintarListaFicheros() {
         ocultar(el("zona-mapeo"));
         ocultar(el("boton-calcular"));
         ocultar(el("zona-resultado"));
+        ocultar(el("aviso-comision-divisa"));
       } else {
         detectarYPreparearMapeo();
       }
@@ -572,7 +580,7 @@ function aplicarAutoDeteccion(cabeceras) {
 
   const recordado = mapeoRecordadoLocal(cabeceras);
   if (recordado) {
-    aplicarMapeoAlFormulario(recordado);
+    aplicarMapeoAlFormulario(recordado.mapeo, recordado.comisionEnDivisaOperacion);
     avisoAuto.textContent = "Hemos recordado el mapeo que usaste la última vez con estas mismas cabeceras. Puedes cambiar cualquier columna si no es correcto.";
     mostrar(avisoAuto);
   } else {
@@ -581,7 +589,7 @@ function aplicarAutoDeteccion(cabeceras) {
       Object.values(preset.mapeo).every((columna) => cabecerasSet.has(columna))
     );
     if (presetQueEncaja) {
-      aplicarMapeoAlFormulario(presetQueEncaja.mapeo);
+      aplicarMapeoAlFormulario(presetQueEncaja.mapeo, presetQueEncaja.comisionEnDivisaOperacion);
       avisoPreset.textContent = `Este fichero encaja con el preset "${presetQueEncaja.nombre}": lo hemos preseleccionado. Puedes cambiar cualquier columna si no es correcto.`;
       mostrar(avisoPreset);
       setTimeout(() => { el("select-preset").value = presetQueEncaja.nombre; }, 0);
@@ -602,6 +610,7 @@ function aplicarAutoDeteccion(cabeceras) {
 
   actualizarEstadoMapeo();
   actualizarResumenMapeoTexto();
+  actualizarAvisoComisionDivisa();
 
   // Solo la deteccion inicial decide si el paso se abre o se pliega; una
   // vez el usuario lo ha tocado, que se quede como el navegador lo deje.
@@ -642,6 +651,7 @@ function pintarTablaMapeo(cabeceras) {
     select.addEventListener("change", () => {
       actualizarEstadoMapeo();
       actualizarResumenMapeoTexto();
+      actualizarAvisoComisionDivisa();
     });
     celdaSelect.appendChild(select);
     fila.appendChild(celdaSelect);
@@ -679,17 +689,57 @@ function obtenerPresets() {
 
   return nombres.map((nombre) => {
     const parPy = lectorCsv.cargar_preset(nombre);
-    const [mapeo] = parPy.toJs({ dict_converter: Object.fromEntries });
+    const [mapeo, , comisionEnDivisaOperacion] = parPy.toJs({ dict_converter: Object.fromEntries });
     parPy.destroy();
-    return { nombre, mapeo };
+    return { nombre, mapeo, comisionEnDivisaOperacion: !!comisionEnDivisaOperacion };
   });
 }
 
-function aplicarMapeoAlFormulario(mapeo) {
+// comisionEnDivisaOperacion es opcional: si no se da (p.ej. al aplicar una
+// sugerencia por sinonimos, que no tiene opinion sobre esto), el
+// desplegable se deja tal como estuviera.
+function aplicarMapeoAlFormulario(mapeo, comisionEnDivisaOperacion) {
   for (const campo of [...CAMPOS_OBLIGATORIOS, ...CAMPOS_OPCIONALES]) {
     const select = el(`mapeo-${campo}`);
     const columna = mapeo[campo] || "";
     select.value = cabecerasActuales.includes(columna) ? columna : "";
+  }
+  if (comisionEnDivisaOperacion !== undefined) {
+    el("select-comision-divisa").value = comisionEnDivisaOperacion ? "divisa_operacion" : "eur";
+  }
+}
+
+function obtenerComisionEnDivisaOperacion() {
+  return el("select-comision-divisa").value === "divisa_operacion";
+}
+
+// Aviso informativo (nunca bloquea) cuando el fichero tiene operaciones en
+// otra divisa con comision distinta de cero: hay que confirmar con el
+// broker en que moneda la cobra antes de fiarse de cualquiera de las dos
+// opciones del desplegable.
+function actualizarAvisoComisionDivisa() {
+  const aviso = el("aviso-comision-divisa");
+  const valores = valoresDelFormulario();
+  if (!valores.comision || ficherosActuales.length === 0) { ocultar(aviso); return; }
+
+  const mapeoPy = pyodide.toPy(new Map(Object.entries(valores)));
+  let hayRiesgo = false;
+  try {
+    for (const fichero of ficherosActuales) {
+      hayRiesgo = lectorCsv.hay_operaciones_en_otra_divisa_con_comision.callKwargs({
+        mapeo: mapeoPy, contenido: fichero.texto,
+      });
+      if (hayRiesgo) break;
+    }
+  } finally {
+    mapeoPy.destroy();
+  }
+
+  if (hayRiesgo) {
+    aviso.textContent = "Tu fichero tiene operaciones en otra divisa con comisión. Comprueba en qué moneda la cobra tu bróker.";
+    mostrar(aviso);
+  } else {
+    ocultar(aviso);
   }
 }
 
@@ -708,9 +758,10 @@ function pintarSelectorPresets() {
     if (!select.value) return;
     const preset = obtenerPresets().find((p) => p.nombre === select.value);
     if (preset) {
-      aplicarMapeoAlFormulario(preset.mapeo);
+      aplicarMapeoAlFormulario(preset.mapeo, preset.comisionEnDivisaOperacion);
       actualizarEstadoMapeo();
       actualizarResumenMapeoTexto();
+      actualizarAvisoComisionDivisa();
     }
   };
 }
@@ -805,7 +856,11 @@ function configurarBotones() {
     if (!mapeo) { mostrarError("Completa antes las columnas obligatorias (*) para poder guardar el preset."); return; }
 
     try {
-      lectorCsv.guardar_preset(nombre, pyodide.toPy(new Map(Object.entries(mapeo))));
+      lectorCsv.guardar_preset.callKwargs({
+        nombre,
+        mapeo: pyodide.toPy(new Map(Object.entries(mapeo))),
+        comision_en_divisa_operacion: obtenerComisionEnDivisaOperacion(),
+      });
     } catch (error) {
       mostrarError(`No se ha podido guardar el preset: ${mensajeDeErrorPython(error)}`);
       return;
@@ -827,11 +882,15 @@ function calcular() {
   const mapeo = leerMapeoDelFormulario();
   if (!mapeo) return;
 
+  const comisionEnDivisaOperacion = obtenerComisionEnDivisaOperacion();
+
   let resultado;
   try {
     const ficherosPy = pyodide.toPy(ficherosActuales.map((f) => [f.nombre, f.texto]));
     const mapeoPy = pyodide.toPy(new Map(Object.entries(mapeo)));
-    const resultadoPy = procesarCsvsMulti(ficherosPy, mapeoPy);
+    const resultadoPy = procesarCsvsMulti.callKwargs({
+      ficheros: ficherosPy, mapeo: mapeoPy, comision_en_divisa_operacion: comisionEnDivisaOperacion,
+    });
     resultado = resultadoPy.toJs({ dict_converter: Object.fromEntries });
     resultadoPy.destroy();
     mapeoPy.destroy();
@@ -852,7 +911,7 @@ function calcular() {
   // El mapeo ha funcionado (aunque algún valor concreto falle después por
   // otro motivo, p.ej. tipo de cambio no disponible): lo recordamos para
   // no obligar a repetirlo si se sube otro fichero con estas cabeceras.
-  recordarMapeoLocal(cabecerasActuales, mapeo);
+  recordarMapeoLocal(cabecerasActuales, mapeo, comisionEnDivisaOperacion);
 
   pintarResultado(resultado);
   mostrar(el("zona-resultado"));

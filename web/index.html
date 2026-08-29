@@ -100,6 +100,15 @@
         </table>
 
         <div class="fila-preset">
+          <label for="select-comision-divisa">La comisión está expresada en</label>
+          <select id="select-comision-divisa">
+            <option value="eur" selected>Euros (EUR)</option>
+            <option value="divisa_operacion">La misma moneda de la operación</option>
+          </select>
+        </div>
+        <div id="aviso-comision-divisa" class="notice notice-info oculto"></div>
+
+        <div class="fila-preset">
           <label for="select-preset">Preset guardado</label>
           <select id="select-preset">
             <option value="">— Elegir columnas a mano —</option>
@@ -171,6 +180,12 @@
             <strong>Dividendos aparte.</strong> Se sacan del cálculo de ganancia patrimonial y se totalizan
             por su cuenta, con su bruto y su retención.
           </li>
+          <li>
+            <strong>Comisión de compra/venta.</strong> Por defecto se asume en euros y se suma o resta tal
+            cual. Si en el paso 2 indicas que está en la misma moneda que la operación, se convierte con
+            ese mismo tipo del BCE y esa misma fecha antes de aplicarla — nunca con un tipo distinto al del
+            importe principal.
+          </li>
         </ol>
         <p class="texto-pequeno">
           El motor que hace estos cálculos está probado con una batería de tests automáticos y su código
@@ -208,6 +223,17 @@
               las acciones). Si los formatos son muy distintos, calcula cada uno por separado sabiendo que
               el resultado de un valor solo será exacto si no lo tienes repartido entre varios brókers a
               la vez.
+            </dd>
+          </div>
+          <div>
+            <dt>¿En qué moneda va la comisión de mis compras y ventas?</dt>
+            <dd>
+              Tú decides en el paso 2: por defecto se asume que tu bróker la cobra en euros, aunque la
+              operación sea en otra divisa (así lo hacen la mayoría). Si en tu caso la cobra en la misma
+              moneda que la operación, cambia el desplegable "La comisión está expresada en" y se convertirá
+              con el mismo tipo del BCE y la misma fecha que el importe principal. Si detectamos operaciones
+              en otra divisa con comisión, te avisamos para que lo confirmes con tu bróker antes de fiarte
+              del resultado.
             </dd>
           </div>
           <div>

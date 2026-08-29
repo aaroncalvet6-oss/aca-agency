@@ -55,6 +55,14 @@ def a_euros(op):
 
     Si no esta en EUR y no trae "cambio", se busca el tipo oficial del BCE
     para su fecha y divisa (op.get("divisa", "USD")).
+
+    La comision (op["comision_eur"]) se asume en EUR por defecto -- asi lo
+    cobran la mayoria de brokers (Trade Republic, por ejemplo) aunque la
+    operacion sea en otra divisa. Si op["comision_en_divisa_operacion"] es
+    verdadero, la comision se trata como si viniera en la MISMA divisa que
+    el importe principal y se convierte con el mismo tipo y la misma fecha
+    (nunca con uno distinto): asi op["comision_eur"] deja de ser un nombre
+    exacto en ese caso, pero el campo se mantiene por compatibilidad.
     """
     acciones = _decimal(op["acciones"])
     precio = _decimal(op["precio_usd"])
@@ -69,7 +77,10 @@ def a_euros(op):
         cambio = op.get("cambio")
         if cambio is None:
             cambio = tipos_cambio.obtener_tipo_cambio(_fecha_completa(op["fecha"]), divisa)
-        importe_eur = importe / _decimal(cambio)
+        cambio = _decimal(cambio)
+        importe_eur = importe / cambio
+        if op.get("comision_en_divisa_operacion"):
+            comision = (comision / cambio).quantize(CENTIMO, rounding=ROUND_HALF_UP)
 
     # Redondeamos a centimos porque esto es dinero real que se movio de verdad.
     importe_eur = importe_eur.quantize(CENTIMO, rounding=ROUND_HALF_UP)

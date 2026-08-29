@@ -173,5 +173,51 @@ class TestProcesarCSV(unittest.TestCase):
         self.assertIsNone(valor_error["ganancia"])
 
 
+RUTA_PRUEBA_5_DOLARES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pruebas", "prueba_5_dolares.csv")
+
+# Tipos oficiales del BCE reales para las fechas de prueba_5_dolares.csv,
+# verificados a mano contra eurofxref-hist.xml (incluido el 01/05/2024,
+# festivo TARGET sin publicacion, que cae al ultimo tipo conocido del
+# 30/04/2024). Se mockean aqui para que el test no dependa de la cache
+# real ni de la red.
+TIPOS_BCE_PRUEBA_5 = {
+    "2024-03-15": 1.0892,
+    "2024-04-02": 1.0749,
+    "2024-05-01": 1.0718,
+    "2024-01-02": 1.0956,
+    "2024-12-02": 1.0507,
+}
+
+
+def _tipo_bce_prueba_5(fecha, divisa):
+    return TIPOS_BCE_PRUEBA_5[fecha.isoformat()]
+
+
+class TestComisionEnDivisaDeLaOperacionEnPruebaReal(unittest.TestCase):
+    """Con la opcion por defecto (comision en EUR), prueba_5_dolares.csv
+    tiene que seguir dando exactamente lo mismo que antes de añadir esta
+    opcion: todas sus comisiones son 0, asi que activar o no la conversion
+    no puede cambiar ni un centimo."""
+
+    def test_por_defecto_no_cambia_ni_un_centimo(self):
+        with FRESCURA_FIJA, patch("calculadora.tipos_cambio.obtener_tipo_cambio", side_effect=_tipo_bce_prueba_5):
+            resultado = procesar_csv(_leer(RUTA_PRUEBA_5_DOLARES), MAPEO_EJEMPLO)
+
+        self.assertTrue(resultado["totales"]["completo"])
+        self.assertEqual(resultado["totales"]["ganancia_patrimonial"], "341.70")
+        self.assertEqual(resultado["valores"]["US0378331005"]["ganancia"], "0.00")
+        self.assertEqual(resultado["valores"]["US5949181045"]["ganancia"], "98.68")
+        self.assertEqual(resultado["valores"]["US02079K3059"]["ganancia"], "195.02")
+        self.assertEqual(resultado["valores"]["IE00B4L5Y983"]["ganancia"], "48.00")
+
+    def test_activar_la_conversion_da_el_mismo_resultado_porque_las_comisiones_son_cero(self):
+        with FRESCURA_FIJA, patch("calculadora.tipos_cambio.obtener_tipo_cambio", side_effect=_tipo_bce_prueba_5):
+            resultado = procesar_csv(
+                _leer(RUTA_PRUEBA_5_DOLARES), MAPEO_EJEMPLO, comision_en_divisa_operacion=True
+            )
+
+        self.assertEqual(resultado["totales"]["ganancia_patrimonial"], "341.70")
+
+
 if __name__ == "__main__":
     unittest.main()

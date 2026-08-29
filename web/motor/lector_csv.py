@@ -222,7 +222,8 @@ def _clasificar_tipo(valor_bruto, tipos):
 
 def leer_operaciones(ruta_csv=None, mapeo=None, tipos=None, preset=None,
                       ruta_presets=RUTA_PRESETS_POR_DEFECTO, separador=None,
-                      encoding="utf-8-sig", contenido=None):
+                      encoding="utf-8-sig", contenido=None,
+                      comision_en_divisa_operacion=False):
     """Lee un CSV de operaciones y lo convierte al modelo de calculadora.py.
 
     Acepta una ruta de fichero (ruta_csv) o el texto ya en memoria
@@ -238,7 +239,14 @@ def leer_operaciones(ruta_csv=None, mapeo=None, tipos=None, preset=None,
            "tipo" es compra/venta/dividendo/ignorar. Si no se da, se usa
            TIPOS_POR_DEFECTO.
     preset: nombre de un preset guardado con guardar_preset(); si se da,
-            sustituye a mapeo/tipos (no hace falta pasar los dos).
+            sustituye a mapeo/tipos/comision_en_divisa_operacion (no hace
+            falta pasar los tres).
+    comision_en_divisa_operacion: por defecto la comision de compras/ventas
+        se asume en EUR (asi la cobran la mayoria de brokers). Si es True,
+        se interpreta en la MISMA divisa que el importe de esa fila y se
+        convierte a euros con el mismo tipo de cambio y la misma fecha que
+        el importe principal (ver calculadora.a_euros). No afecta a la
+        retencion de los dividendos, que siempre se trata en EUR.
 
     Devuelve (operaciones_por_valor, dividendos_por_valor, avisos):
       operaciones_por_valor: {valor_o_isin: [operacion, ...]}, cada lista ya
@@ -258,7 +266,7 @@ def leer_operaciones(ruta_csv=None, mapeo=None, tipos=None, preset=None,
         ni en dividendos_por_valor.
     """
     if preset is not None:
-        mapeo, tipos = cargar_preset(preset, ruta_presets)
+        mapeo, tipos, comision_en_divisa_operacion = cargar_preset(preset, ruta_presets)
 
     if not mapeo:
         raise ErrorLectorCSV("Hace falta un 'mapeo' (o un 'preset' ya guardado)")
@@ -351,6 +359,7 @@ def leer_operaciones(ruta_csv=None, mapeo=None, tipos=None, preset=None,
             "precio_usd": precio,   # nombre historico del campo: precio en la divisa de la operacion
             "comision_eur": comision if comision is not None else "0",
             "divisa": divisa or "EUR",
+            "comision_en_divisa_operacion": comision_en_divisa_operacion,
         }
         pendientes_por_valor[valor].append((fecha, operacion))
 
@@ -358,6 +367,40 @@ def leer_operaciones(ruta_csv=None, mapeo=None, tipos=None, preset=None,
     dividendos_por_valor = _agrupar_ordenado(pendientes_dividendos_por_valor)
 
     return operaciones_por_valor, dividendos_por_valor, avisos
+
+
+def hay_operaciones_en_otra_divisa_con_comision(mapeo, ruta_csv=None, contenido=None,
+                                                 encoding="utf-8-sig", separador=None):
+    """True si el fichero tiene alguna fila con divisa distinta de EUR y una
+    comision distinta de cero. Es solo para avisar en la interfaz de que hay
+    que confirmar en que moneda cobra la comision el broker (ver
+    comision_en_divisa_operacion en leer_operaciones): no bloquea nada, y
+    una fila con un numero invalido en cualquiera de las dos columnas se
+    ignora aqui sin mas (leer_operaciones ya la reporta como aviso aparte).
+    """
+    columna_comision = mapeo.get("comision") if mapeo else None
+    if not columna_comision:
+        return False
+
+    columna_divisa = mapeo.get("divisa")
+    texto = _texto_completo(ruta_csv, contenido, encoding)
+    separador = separador or _detectar_separador(texto)
+
+    lector = csv.DictReader(io.StringIO(texto), delimiter=separador)
+    lector.fieldnames = [c.strip() for c in (lector.fieldnames or [])]
+
+    for fila in lector:
+        divisa = fila.get(columna_divisa, "").strip() if columna_divisa else ""
+        if not divisa or divisa == "EUR":
+            continue
+        try:
+            comision = _parsear_numero(fila.get(columna_comision, ""))
+        except ErrorLectorCSV:
+            continue
+        if comision is not None and Decimal(comision) != 0:
+            return True
+
+    return False
 
 
 def _agrupar_ordenado(pendientes_por_valor):
@@ -389,9 +432,14 @@ def resumir_dividendos(dividendos_por_valor):
     return {"bruto_total": bruto_total, "retencion_total": retencion_total, "por_valor": por_valor}
 
 
-def guardar_preset(nombre, mapeo, tipos=None, ruta_presets=RUTA_PRESETS_POR_DEFECTO):
+def guardar_preset(nombre, mapeo, tipos=None, comision_en_divisa_operacion=False,
+                    ruta_presets=RUTA_PRESETS_POR_DEFECTO):
     presets = _cargar_todos_los_presets(ruta_presets)
-    presets[nombre] = {"mapeo": mapeo, "tipos": tipos or TIPOS_POR_DEFECTO}
+    presets[nombre] = {
+        "mapeo": mapeo,
+        "tipos": tipos or TIPOS_POR_DEFECTO,
+        "comision_en_divisa_operacion": bool(comision_en_divisa_operacion),
+    }
     os.makedirs(os.path.dirname(ruta_presets) or ".", exist_ok=True)
     with open(ruta_presets, "w", encoding="utf-8") as f:
         json.dump(presets, f, ensure_ascii=False, indent=2, sort_keys=True)
@@ -403,7 +451,11 @@ def cargar_preset(nombre, ruta_presets=RUTA_PRESETS_POR_DEFECTO):
         disponibles = ", ".join(sorted(presets)) or "(ninguno)"
         raise ErrorLectorCSV(f"No existe el preset '{nombre}'. Presets disponibles: {disponibles}")
     preset = presets[nombre]
-    return preset["mapeo"], preset.get("tipos", TIPOS_POR_DEFECTO)
+    return (
+        preset["mapeo"],
+        preset.get("tipos", TIPOS_POR_DEFECTO),
+        preset.get("comision_en_divisa_operacion", False),
+    )
 
 
 def listar_presets(ruta_presets=RUTA_PRESETS_POR_DEFECTO):

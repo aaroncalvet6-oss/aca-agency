@@ -52,8 +52,12 @@ def info_frescura_bce(divisa="USD"):
         }
 
 
-def procesar_csv(contenido_csv, mapeo, tipos=None):
+def procesar_csv(contenido_csv, mapeo, tipos=None, comision_en_divisa_operacion=False):
     """Lee el CSV (ya en memoria, nunca en disco) y calcula todo.
+
+    comision_en_divisa_operacion: por defecto la comision de compras/ventas
+    se asume en EUR; si es True, se trata como si viniera en la misma
+    divisa que el importe de esa fila (ver lector_csv.leer_operaciones).
 
     Devuelve un dict JSON-serializable:
       {
@@ -92,6 +96,7 @@ def procesar_csv(contenido_csv, mapeo, tipos=None):
     try:
         operaciones_por_valor, dividendos_por_valor, avisos = lector_csv.leer_operaciones(
             contenido=contenido_csv, mapeo=mapeo, tipos=tipos,
+            comision_en_divisa_operacion=comision_en_divisa_operacion,
         )
     except lector_csv.ErrorLectorCSV as error:
         resultado["error_lectura"] = str(error)

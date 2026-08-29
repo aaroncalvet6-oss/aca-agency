@@ -13,6 +13,7 @@ from lector_csv import (
     cargar_preset,
     detectar_csv,
     guardar_preset,
+    hay_operaciones_en_otra_divisa_con_comision,
     leer_operaciones,
     listar_presets,
     resumir_dividendos,
@@ -246,11 +247,23 @@ class TestPresets(unittest.TestCase):
     def test_guardar_y_cargar_preset(self):
         guardar_preset("mi_broker", MAPEO_EJEMPLO, ruta_presets=self.ruta_presets)
 
-        mapeo_cargado, tipos_cargados = cargar_preset("mi_broker", ruta_presets=self.ruta_presets)
+        mapeo_cargado, tipos_cargados, comision_en_divisa = cargar_preset(
+            "mi_broker", ruta_presets=self.ruta_presets
+        )
 
         self.assertEqual(mapeo_cargado, MAPEO_EJEMPLO)
         self.assertIn("compra", tipos_cargados)
+        self.assertFalse(comision_en_divisa)   # por defecto, comision en EUR
         self.assertIn("mi_broker", listar_presets(ruta_presets=self.ruta_presets))
+
+    def test_guardar_preset_recuerda_la_divisa_de_la_comision(self):
+        guardar_preset(
+            "mi_broker", MAPEO_EJEMPLO, comision_en_divisa_operacion=True, ruta_presets=self.ruta_presets
+        )
+
+        _, _, comision_en_divisa = cargar_preset("mi_broker", ruta_presets=self.ruta_presets)
+
+        self.assertTrue(comision_en_divisa)
 
     def test_cargar_preset_inexistente_da_error_claro(self):
         with self.assertRaises(ErrorLectorCSV):
@@ -264,6 +277,77 @@ class TestPresets(unittest.TestCase):
         )
 
         self.assertIn("IE00B4L5Y983", operaciones_por_valor)
+
+    def test_el_preset_tambien_aplica_la_divisa_de_la_comision(self):
+        guardar_preset(
+            "broker_usd", MAPEO_EJEMPLO, comision_en_divisa_operacion=True, ruta_presets=self.ruta_presets
+        )
+
+        operaciones_por_valor, _, _ = leer_operaciones(
+            RUTA_EJEMPLO, preset="broker_usd", ruta_presets=self.ruta_presets
+        )
+
+        primera_operacion = operaciones_por_valor["IE00B4L5Y983"][0]
+        self.assertTrue(primera_operacion["comision_en_divisa_operacion"])
+
+
+class TestComisionEnDivisaDeLaOperacion(unittest.TestCase):
+    """leer_operaciones() se limita a anotar en cada operacion en que
+    divisa hay que interpretar su comision; quien la convierte de verdad
+    es calculadora.a_euros() (ver test_calculadora.py)."""
+
+    CONTENIDO = (
+        "Fecha;Tipo;ISIN;Cantidad;Precio;Moneda;Comision\n"
+        "15/01/2024;Compra;US0000000001;10;100;USD;11\n"
+    )
+
+    def test_por_defecto_las_operaciones_no_llevan_la_marca_activada(self):
+        operaciones_por_valor, _, _ = leer_operaciones(contenido=self.CONTENIDO, mapeo=MAPEO_EJEMPLO)
+
+        operacion = operaciones_por_valor["US0000000001"][0]
+        self.assertFalse(operacion["comision_en_divisa_operacion"])
+
+    def test_con_la_opcion_activada_todas_las_operaciones_quedan_marcadas(self):
+        operaciones_por_valor, _, _ = leer_operaciones(
+            contenido=self.CONTENIDO, mapeo=MAPEO_EJEMPLO, comision_en_divisa_operacion=True
+        )
+
+        operacion = operaciones_por_valor["US0000000001"][0]
+        self.assertTrue(operacion["comision_en_divisa_operacion"])
+
+
+class TestAvisoComisionEnOtraDivisa(unittest.TestCase):
+    """Deteccion para el aviso de la interfaz ("comprueba en que moneda
+    cobra la comision tu broker"): nunca bloquea nada, solo informa."""
+
+    def test_fila_en_otra_divisa_con_comision_distinta_de_cero_avisa(self):
+        contenido = (
+            "Fecha;Tipo;ISIN;Cantidad;Precio;Moneda;Comision\n"
+            "15/01/2024;Compra;US0000000001;10;100;USD;1\n"
+        )
+        self.assertTrue(hay_operaciones_en_otra_divisa_con_comision(MAPEO_EJEMPLO, contenido=contenido))
+
+    def test_fila_en_otra_divisa_con_comision_cero_no_avisa(self):
+        contenido = (
+            "Fecha;Tipo;ISIN;Cantidad;Precio;Moneda;Comision\n"
+            "15/01/2024;Compra;US0000000001;10;100;USD;0\n"
+        )
+        self.assertFalse(hay_operaciones_en_otra_divisa_con_comision(MAPEO_EJEMPLO, contenido=contenido))
+
+    def test_fichero_solo_en_eur_no_avisa_aunque_haya_comision(self):
+        contenido = (
+            "Fecha;Tipo;ISIN;Cantidad;Precio;Moneda;Comision\n"
+            "15/01/2024;Compra;IE00B4L5Y983;10;100;EUR;1\n"
+        )
+        self.assertFalse(hay_operaciones_en_otra_divisa_con_comision(MAPEO_EJEMPLO, contenido=contenido))
+
+    def test_sin_columna_de_comision_mapeada_no_avisa(self):
+        contenido = (
+            "Fecha;Tipo;ISIN;Cantidad;Precio;Moneda\n"
+            "15/01/2024;Compra;US0000000001;10;100;USD\n"
+        )
+        mapeo_sin_comision = {k: v for k, v in MAPEO_EJEMPLO.items() if k != "comision"}
+        self.assertFalse(hay_operaciones_en_otra_divisa_con_comision(mapeo_sin_comision, contenido=contenido))
 
 
 class TestExtractoDeEjemploCompleto(unittest.TestCase):
