@@ -335,14 +335,8 @@ async function cargarTiposBCE() {
     const respuesta = await fetch(`motor/${RUTA_CACHE_BCE}`);
     if (!respuesta.ok) throw new Error(`HTTP ${respuesta.status} al pedir motor/${RUTA_CACHE_BCE}`);
     pyodide.FS.writeFile(RUTA_CACHE_BCE, await respuesta.text());
-
-    mostrarFrescuraBCE();
   } catch (error) {
     console.error("Fallo cargando los tipos de cambio del BCE:", error);
-
-    const rates = el("frescura-bce");
-    rates.textContent = "Tipos del BCE no disponibles";
-    rates.classList.add("warn");
 
     const banner = el("bce-error");
     banner.querySelector(".wrap").innerHTML =
@@ -352,28 +346,6 @@ async function cargarTiposBCE() {
       `<span class="mono"> ${escaparHtml(error.message || String(error))}</span>`;
     mostrar(banner);
   }
-}
-
-function mostrarFrescuraBCE() {
-  const infoPy = motorWeb.info_frescura_bce();
-  const info = infoPy.toJs({ dict_converter: Object.fromEntries });
-  infoPy.destroy();
-
-  const rates = el("frescura-bce");
-  rates.classList.remove("warn");
-
-  if (!info.ok) {
-    rates.textContent = "Tipos del BCE: error al comprobar la fecha";
-    rates.classList.add("warn");
-    return;
-  }
-
-  let texto = `Tipos del BCE · ${info.fecha_mas_reciente}`;
-  if (info.desactualizado) {
-    texto += ` · desactualizado (${info.dias_de_antiguedad} d)`;
-    rates.classList.add("warn");
-  }
-  rates.textContent = texto;
 }
 
 // --- Presets: persistencia en localStorage --------------------------------

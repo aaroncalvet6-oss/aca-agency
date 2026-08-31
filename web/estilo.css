@@ -97,9 +97,9 @@ header.top .wrap { display: flex; align-items: center; justify-content: space-be
 .brand svg { display: block; }
 .brand b { font-family: var(--f-sans); font-size: 1.14rem; font-weight: 600; letter-spacing: -0.03em; }
 .brand b i { font-style: normal; color: #7BA7D4; }
-header.top .rates { font-family: var(--f-mono); font-size: 0.7rem; color: #8A959F; }
-header.top .rates.warn { color: var(--warn); }
 
+/* nav.herramientas: sin usar todavía — se añade al índice de cada página
+   solo cuando exista de verdad, para no enlazar nunca a un 404. */
 nav.herramientas { background: var(--ink-2); border-bottom: 1px solid #263039; }
 nav.herramientas .wrap { display: flex; gap: 1.5rem; overflow-x: auto; }
 nav.herramientas a {
