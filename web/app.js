@@ -208,10 +208,10 @@ let pyodide = null;
 let lectorCsv = null;
 let motorWeb = null;
 let procesarCsvsMulti = null;
-let bceDisponible = false;
 let ficherosActuales = [];   // [{nombre, tamano, texto}, ...]
 let cabecerasActuales = [];
 let ultimoResultado = null;
+let nombrePresetActivo = null;   // null = mapeo a mano, sin preset asociado
 
 const el = (id) => document.getElementById(id);
 
@@ -336,11 +336,9 @@ async function cargarTiposBCE() {
     if (!respuesta.ok) throw new Error(`HTTP ${respuesta.status} al pedir motor/${RUTA_CACHE_BCE}`);
     pyodide.FS.writeFile(RUTA_CACHE_BCE, await respuesta.text());
 
-    bceDisponible = true;
     mostrarFrescuraBCE();
   } catch (error) {
     console.error("Fallo cargando los tipos de cambio del BCE:", error);
-    bceDisponible = false;
 
     const rates = el("frescura-bce");
     rates.textContent = "Tipos del BCE no disponibles";
@@ -403,6 +401,19 @@ function guardarPresetsEnLocalStorage() {
   } catch (error) {
     console.warn("No se ha podido recordar el preset en este navegador:", error);
   }
+}
+
+// Borrar un preset no es una operación que exponga lector_csv.py (solo
+// guardar/cargar/listar): en vez de tocar el motor para añadir un
+// "borrar_preset", se manipula aquí mismo el JSON ya cargado en el
+// filesystem de Pyodide, con las mismas funciones de fichero que ya usa
+// guardar_preset por debajo (leer, modificar, escribir).
+function eliminarPreset(nombre) {
+  const contenido = pyodide.FS.readFile("presets_broker.json", { encoding: "utf8" });
+  const presets = JSON.parse(contenido);
+  delete presets[nombre];
+  pyodide.FS.writeFile("presets_broker.json", JSON.stringify(presets, null, 2));
+  guardarPresetsEnLocalStorage();
 }
 
 // --- Recordar el último mapeo usado para unas mismas cabeceras -----------
@@ -577,6 +588,7 @@ function aplicarAutoDeteccion(cabeceras) {
   const avisoAuto = el("mapeo-auto-detectado");
   ocultar(avisoPreset);
   ocultar(avisoAuto);
+  nombrePresetActivo = null;
 
   const recordado = mapeoRecordadoLocal(cabeceras);
   if (recordado) {
@@ -590,6 +602,7 @@ function aplicarAutoDeteccion(cabeceras) {
     );
     if (presetQueEncaja) {
       aplicarMapeoAlFormulario(presetQueEncaja.mapeo, presetQueEncaja.comisionEnDivisaOperacion);
+      nombrePresetActivo = presetQueEncaja.nombre;
       avisoPreset.textContent = `Este fichero encaja con el preset "${presetQueEncaja.nombre}": lo hemos preseleccionado. Puedes cambiar cualquier columna si no es correcto.`;
       mostrar(avisoPreset);
       setTimeout(() => { el("select-preset").value = presetQueEncaja.nombre; }, 0);
@@ -611,6 +624,7 @@ function aplicarAutoDeteccion(cabeceras) {
   actualizarEstadoMapeo();
   actualizarResumenMapeoTexto();
   actualizarAvisoComisionDivisa();
+  actualizarPresetActivo();
 
   // Solo la deteccion inicial decide si el paso se abre o se pliega; una
   // vez el usuario lo ha tocado, que se quede como el navegador lo deje.
@@ -649,9 +663,12 @@ function pintarTablaMapeo(cabeceras) {
     }
 
     select.addEventListener("change", () => {
+      nombrePresetActivo = null;   // tocar cualquier columna a mano desasocia el preset
+      el("select-preset").value = "";
       actualizarEstadoMapeo();
       actualizarResumenMapeoTexto();
       actualizarAvisoComisionDivisa();
+      actualizarPresetActivo();
     });
     celdaSelect.appendChild(select);
     fila.appendChild(celdaSelect);
@@ -755,15 +772,46 @@ function pintarSelectorPresets() {
   }
 
   select.onchange = () => {
-    if (!select.value) return;
+    if (!select.value) {
+      nombrePresetActivo = null;
+      actualizarPresetActivo();
+      return;
+    }
     const preset = obtenerPresets().find((p) => p.nombre === select.value);
     if (preset) {
       aplicarMapeoAlFormulario(preset.mapeo, preset.comisionEnDivisaOperacion);
+      nombrePresetActivo = preset.nombre;
       actualizarEstadoMapeo();
       actualizarResumenMapeoTexto();
       actualizarAvisoComisionDivisa();
+      actualizarPresetActivo();
     }
   };
+}
+
+// Deja claro cuál de los presets guardados está aplicado ahora mismo (si
+// alguno), con un botón para borrarlo sin tener que ir a buscarlo en el
+// desplegable. Tocar cualquier columna a mano lo desasocia (ver
+// pintarTablaMapeo), para no dar a entender que sigue vigente un preset
+// que ya no coincide con lo que hay en el formulario.
+function actualizarPresetActivo() {
+  const contenedor = el("preset-activo");
+  if (!nombrePresetActivo) { ocultar(contenedor); return; }
+
+  contenedor.innerHTML = `Preset activo: <b>${escaparHtml(nombrePresetActivo)}</b> · `;
+  const boton = document.createElement("button");
+  boton.type = "button";
+  boton.className = "boton-enlace";
+  boton.textContent = "Borrar este preset";
+  boton.addEventListener("click", () => {
+    if (!confirm(`¿Borrar el preset "${nombrePresetActivo}"? Esto no afecta al mapeo que tienes puesto ahora, solo lo quita de la lista de presets guardados.`)) return;
+    eliminarPreset(nombrePresetActivo);
+    nombrePresetActivo = null;
+    pintarSelectorPresets();
+    actualizarPresetActivo();
+  });
+  contenedor.appendChild(boton);
+  mostrar(contenedor);
 }
 
 function valoresDelFormulario() {
@@ -868,8 +916,10 @@ function configurarBotones() {
 
     guardarPresetsEnLocalStorage();
     el("input-nombre-preset").value = "";
+    nombrePresetActivo = nombre;
     pintarSelectorPresets();
     el("select-preset").value = nombre;
+    actualizarPresetActivo();
   });
 
   el("boton-descargar").addEventListener("click", descargarDesgloseCSV);
@@ -925,7 +975,7 @@ function pintarResultado(resultado) {
   pintarDondeVaEsto(resultado);
 
   const hayAlgoQueDescargar = Object.values(resultado.valores).some((v) => v.desglose && v.desglose.length);
-  el("zona-pago").classList.toggle("oculto", !hayAlgoQueDescargar);
+  el("zona-descarga").classList.toggle("oculto", !hayAlgoQueDescargar);
 }
 
 function etiquetaEjercicio(anios) {
@@ -941,7 +991,7 @@ function bloqueDividendos(dividendos) {
       <div style="margin-top:0.6rem">
         <div class="kv"><span class="k">Bruto</span><span class="v">${formatoDinero(dividendos.bruto_total)}</span></div>
         <div class="kv"><span class="k">Retención en origen</span><span class="v">${formatoDinero(dividendos.retencion_total)}</span></div>
-        <div class="kv"><span class="k">A declarar</span><span class="v" style="font-weight:600">${formatoDinero(dividendos.a_declarar_total)}</span></div>
+        <div class="kv"><span class="k">A declarar</span><span class="v fuerte">${formatoDinero(dividendos.a_declarar_total)}</span></div>
       </div>
     </div>
   `;
@@ -993,7 +1043,7 @@ function pintarResultadoCard(resultado) {
       <div style="margin-top:0.6rem">
         <div class="kv"><span class="k">Bruto de las ventas</span><span class="v">${formatoDinero(bruto_patrimonial)}</span></div>
         <div class="kv"><span class="k">Bloqueado por recompra</span><span class="v">${formatoDinero(bloqueado_patrimonial)}</span></div>
-        <div class="kv"><span class="k">Declarable</span><span class="v" style="font-weight:600">${formatoDinero(ganancia_patrimonial)}</span></div>
+        <div class="kv"><span class="k">Declarable</span><span class="v fuerte">${formatoDinero(ganancia_patrimonial)}</span></div>
       </div>
     </div>
   `;
@@ -1117,7 +1167,7 @@ function pintarAvisos(avisos) {
   mostrar(contenedor);
 }
 
-// --- Paso 4: descargar el desglose en CSV --------------------------------
+// --- Paso 4: descargar el desglose en CSV (gratis, sin registro) --------
 
 function descargarDesgloseCSV() {
   if (!ultimoResultado) return;

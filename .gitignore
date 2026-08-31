@@ -1,3 +1,8 @@
 __pycache__/
 *.pyc
 /cache/
+
+# Artefactos de pruebas locales de la web (Pyodide servido en local para
+# poder probar en un entorno sin acceso a la CDN): nunca se despliegan.
+web/_test_pyodide/
+web/_test_index.html

@@ -1,9 +1,9 @@
-/* FIFO.es — hoja de estilos.
-   Sistema de diseño adoptado tal cual de diseno-referencia.html (maqueta
-   aprobada): paleta, tipografía (IBM Plex Sans + IBM Plex Mono, sin
-   tercera familia), radio de 4px, bordes de 1px, sin sombras difusas.
-   Lo que la maqueta no cubre (mapeo de columnas, avisos, FAQ...) se
-   extiende con los mismos tokens y el mismo lenguaje visual. */
+/* FIFO.es — sistema de diseño compartido por todas las páginas.
+   Tokens y reglas tomados de diseno-referencia.html (maqueta aprobada):
+   IBM Plex Sans + IBM Plex Mono (ninguna otra familia), radio de 4px,
+   bordes de 1px, sin sombras difusas, cifra principal en mono al tamaño
+   exacto de la maqueta, tabular-nums en toda cifra, coma decimal española
+   en toda la página (la conversión número→texto vive en cada app.js). */
 
 :root {
   --ink:        #0E1419;
@@ -55,7 +55,6 @@
 }
 
 * { box-sizing: border-box; }
-
 html { color-scheme: light dark; }
 
 body {
@@ -91,7 +90,7 @@ a { color: var(--accent); }
   * { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
 }
 
-/* ── cabecera ── */
+/* ── cabecera + navegación entre herramientas ── */
 header.top { background: var(--ink); color: #EEF1F3; padding: 1.1rem 0; }
 header.top .wrap { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
 .brand { display: flex; align-items: center; gap: 0.6rem; }
@@ -100,6 +99,15 @@ header.top .wrap { display: flex; align-items: center; justify-content: space-be
 .brand b i { font-style: normal; color: #7BA7D4; }
 header.top .rates { font-family: var(--f-mono); font-size: 0.7rem; color: #8A959F; }
 header.top .rates.warn { color: var(--warn); }
+
+nav.herramientas { background: var(--ink-2); border-bottom: 1px solid #263039; }
+nav.herramientas .wrap { display: flex; gap: 1.5rem; overflow-x: auto; }
+nav.herramientas a {
+  display: block; padding: 0.7rem 0; font-size: 0.82rem; color: #A8B3BC;
+  text-decoration: none; border-bottom: 2px solid transparent; white-space: nowrap;
+}
+nav.herramientas a:hover { color: #FFF; }
+nav.herramientas a[aria-current="page"] { color: #FFF; border-bottom-color: var(--accent); font-weight: 600; }
 
 .bce-error {
   background: var(--warn-wash);
@@ -120,6 +128,10 @@ header.top .rates.warn { color: var(--warn); }
 .whats span.n { font-family: var(--f-mono); font-size: 0.68rem; color: #5E7EA0; }
 .whats span.t { font-size: 0.9rem; color: #C3CBD2; }
 .whats b { color: #FFF; font-weight: 600; }
+
+/* ── hero simple, para páginas sin los 4 puntos ── */
+.hero.simple .wrap { grid-template-columns: 1fr; gap: 0; }
+.hero.simple .sub { max-width: 38rem; }
 
 /* ── estado del motor (antes de que aparezcan los pasos) ── */
 .estado-motor {
@@ -200,7 +212,7 @@ details.card > summary::-webkit-details-marker { display: none; }
 .tabla-mapeo select { width: 100%; }
 .campo-obligatorio-marca { color: var(--loss); }
 
-select, input[type="text"] {
+select, input[type="text"], input[type="number"], input[type="date"] {
   font: inherit; font-size: 0.88rem; padding: 0.4rem 0.55rem;
   border: 1px solid var(--line); border-radius: var(--r);
   background: var(--surface); color: var(--text); max-width: 100%;
@@ -208,6 +220,14 @@ select, input[type="text"] {
 
 .fila-preset { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
 .fila-preset label { font-weight: 600; font-size: 0.86rem; }
+
+.preset-activo { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem; font-size: 0.86rem; color: var(--text-2); }
+.preset-activo b { color: var(--text); }
+.boton-enlace {
+  font: inherit; font-size: 0.83rem; color: var(--loss); background: none;
+  border: none; padding: 0; cursor: pointer; text-decoration: underline;
+}
+.boton-enlace:hover { color: var(--loss); opacity: 0.8; }
 
 .vista-previa { font-size: 0.86rem; }
 .vista-previa summary { cursor: pointer; color: var(--accent); }
@@ -244,7 +264,7 @@ select, input[type="text"] {
 .result .big {
   font-family: var(--f-mono); font-size: clamp(2.3rem, 5.6vw, 3.3rem); font-weight: 500;
   line-height: 1.05; letter-spacing: -0.035em; color: var(--text);
-  font-variant-numeric: tabular-nums; margin-top: 0.4rem;
+  font-variant-numeric: tabular-nums; margin-top: 0.4rem; text-align: left;
 }
 .result .big.chica { font-family: var(--f-sans); font-size: 1.35rem; font-weight: 600; letter-spacing: -0.01em; color: var(--text); }
 .result .note { margin-top: 0.8rem; font-size: 0.86rem; color: var(--text-2); max-width: 34rem; }
@@ -259,6 +279,7 @@ select, input[type="text"] {
 .kv + .kv { border-top: 1px solid var(--line-2); }
 .kv .k { font-size: 0.88rem; color: var(--text-2); }
 .kv .v { font-family: var(--f-mono); font-size: 0.9rem; font-variant-numeric: tabular-nums; }
+.kv .v.fuerte { font-weight: 600; }
 
 .sec { padding: 1.4rem 1.5rem; border-top: 1px solid var(--line-2); }
 .sec h3 { font-size: 1.05rem; margin-bottom: 0.2rem; }
@@ -288,12 +309,12 @@ tfoot td { padding-top: 0.6rem; font-weight: 600; color: var(--text); }
 .where p + p { margin-top: 0.5rem; }
 .where .warn-note { margin-top: 0.85rem; padding-top: 0.75rem; border-top: 1px solid var(--line); font-size: 0.83rem; color: var(--warn); }
 
-/* ── descarga / pago ── */
-.pay { margin-top: 0.9rem; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 1.4rem 1.5rem; display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 1.4rem; align-items: center; }
-.pay h3 { font-size: 1.05rem; }
-.pay p { font-size: 0.87rem; color: var(--text-2); margin-top: 0.35rem; max-width: 32rem; }
-.pay .btn { padding: 0.85rem 1.4rem; background: var(--ink); color: #FFF; border: none; border-radius: var(--r); font-family: var(--f-sans); font-size: 0.92rem; font-weight: 600; white-space: nowrap; cursor: pointer; }
-.pay .btn small { display: block; font-weight: 400; font-size: 0.74rem; color: #9FAAB4; margin-top: 0.1rem; }
+/* ── descarga gratuita del desglose ── */
+.descarga { margin-top: 0.9rem; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 1.4rem 1.5rem; display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 1.4rem; align-items: center; }
+.descarga h3 { font-size: 1.05rem; }
+.descarga p { font-size: 0.87rem; color: var(--text-2); margin-top: 0.35rem; max-width: 32rem; }
+.descarga .btn { padding: 0.85rem 1.4rem; background: var(--ink); color: #FFF; border: none; border-radius: var(--r); font-family: var(--f-sans); font-size: 0.92rem; font-weight: 600; white-space: nowrap; cursor: pointer; }
+.descarga .btn small { display: block; font-weight: 400; font-size: 0.74rem; color: #9FAAB4; margin-top: 0.1rem; }
 
 /* ── secciones plegables: cómo funciona / FAQ ── */
 .plegable summary { padding: 1.2rem 1.5rem; display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; }
@@ -310,18 +331,26 @@ tfoot td { padding-top: 0.6rem; font-weight: 600; color: var(--text); }
 .lista-faq dt { font-weight: 700; color: var(--text); font-size: 0.95rem; }
 .lista-faq dd { margin: 0.3rem 0 0; }
 
+/* ── páginas de texto (aviso legal, privacidad) ── */
+.texto-legal h2 { font-size: 1.1rem; margin-top: 1.6rem; }
+.texto-legal h2:first-child { margin-top: 0; }
+.texto-legal p { margin-top: 0.7rem; font-size: 0.92rem; color: var(--text-2); }
+.texto-legal p:first-of-type { margin-top: 0.9rem; }
+
 footer.pie { border-top: 1px solid var(--line); padding: 1.8rem 0 2.4rem; }
-footer.pie p { font-size: 0.82rem; color: var(--text-3); max-width: 38rem; }
+footer.pie p { font-size: 0.82rem; color: var(--text-3); max-width: 42rem; }
+footer.pie nav { margin-top: 0.7rem; display: flex; gap: 1rem; flex-wrap: wrap; }
+footer.pie nav a { font-size: 0.82rem; color: var(--text-2); }
 
 @media (max-width: 780px) {
   .hero .wrap { grid-template-columns: 1fr; gap: 1.8rem; }
-  .pay { grid-template-columns: 1fr; }
+  .descarga { grid-template-columns: 1fr; }
   .step span { display: none; }
 }
 
 @media (max-width: 480px) {
   .pad, .cuerpo-mapeo, .sec, .cuerpo-plegable, .plegable summary { padding-left: 1.1rem; padding-right: 1.1rem; }
   .result .head, .split2 > div { padding-left: 1.1rem; padding-right: 1.1rem; }
-  .where, .pay { padding-left: 1.1rem; padding-right: 1.1rem; }
+  .where, .descarga { padding-left: 1.1rem; padding-right: 1.1rem; }
   .wrap { padding: 0 1.1rem; }
 }
