@@ -280,6 +280,7 @@ select, input[type="text"], input[type="number"], input[type="date"] {
 .kv .k { font-size: 0.88rem; color: var(--text-2); }
 .kv .v { font-family: var(--f-mono); font-size: 0.9rem; font-variant-numeric: tabular-nums; }
 .kv .v.fuerte { font-weight: 600; }
+.nota-bloqueo { font-size: 0.78rem; color: var(--text-3); line-height: 1.5; padding: 0.1rem 0 0.3rem; border-top: 1px solid var(--line-2); margin-top: -1px; }
 
 .sec { padding: 1.4rem 1.5rem; border-top: 1px solid var(--line-2); }
 .sec h3 { font-size: 1.05rem; margin-bottom: 0.2rem; }
@@ -341,6 +342,7 @@ footer.pie { border-top: 1px solid var(--line); padding: 1.8rem 0 2.4rem; }
 footer.pie p { font-size: 0.82rem; color: var(--text-3); max-width: 42rem; }
 footer.pie nav { margin-top: 0.7rem; display: flex; gap: 1rem; flex-wrap: wrap; }
 footer.pie nav a { font-size: 0.82rem; color: var(--text-2); }
+footer.pie nav a[aria-current="page"] { color: var(--text); font-weight: 600; text-decoration: none; }
 
 @media (max-width: 780px) {
   .hero .wrap { grid-template-columns: 1fr; gap: 1.8rem; }

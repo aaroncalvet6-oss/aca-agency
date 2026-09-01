@@ -225,11 +225,16 @@ function escaparHtml(texto) {
 }
 
 // "-40.80" -> "-40,80 €" ; "1234.5" -> "1.234,50 €"
+// El signo menos es el tipográfico real (− U+2212), no el guion del
+// teclado (-): un guion es un signo de puntuación, no un operador
+// matemático, y en una herramienta de cifras la diferencia se nota.
+const SIGNO_MENOS = "−";
+
 function formatoDinero(cadena) {
   const negativo = cadena.trim().startsWith("-");
   const [entero, decimales] = cadena.replace("-", "").split(".");
   const enteroConMiles = entero.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
-  return `${negativo ? "-" : ""}${enteroConMiles},${decimales || "00"} €`;
+  return `${negativo ? SIGNO_MENOS : ""}${enteroConMiles},${decimales || "00"} €`;
 }
 
 // Las cantidades de acciones (p.ej. "0.30") vienen de Python con el punto
@@ -241,7 +246,7 @@ function formatoCantidad(cadena) {
   const [entero, decimalesBrutos] = cadena.replace("-", "").split(".");
   const enteroConMiles = entero.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
   const decimales = (decimalesBrutos || "").padEnd(2, "0");
-  return `${negativo ? "-" : ""}${enteroConMiles},${decimales}`;
+  return `${negativo ? SIGNO_MENOS : ""}${enteroConMiles},${decimales}`;
 }
 
 // --- Progreso de los 3 pasos ---------------------------------------------
@@ -586,8 +591,19 @@ function aplicarAutoDeteccion(cabeceras) {
       const nDetectados = Object.keys(sugerencia).length;
       if (nDetectados > 0) {
         aplicarMapeoAlFormulario(sugerencia);
-        const totalCampos = CAMPOS_OBLIGATORIOS.length + CAMPOS_OPCIONALES.length;
-        avisoAuto.textContent = `Hemos detectado automáticamente ${nDetectados} de ${totalCampos} columnas por el nombre de la cabecera. Revisa y completa el resto.`;
+        const todosLosCampos = [...CAMPOS_OBLIGATORIOS, ...CAMPOS_OPCIONALES];
+        const faltanObligatorios = CAMPOS_OBLIGATORIOS.filter((c) => !sugerencia[c]);
+        const faltanOpcionales = CAMPOS_OPCIONALES.filter((c) => !sugerencia[c]);
+
+        let mensaje = `Hemos detectado automáticamente ${nDetectados} de ${todosLosCampos.length} campos, por el nombre de su cabecera.`;
+        if (faltanObligatorios.length > 0) {
+          mensaje += ` Falta indicar: ${faltanObligatorios.map((c) => ETIQUETAS_CAMPO[c]).join(", ")}.`;
+        }
+        if (faltanOpcionales.length > 0) {
+          const verbo = faltanOpcionales.length === 1 ? "es opcional" : "son opcionales";
+          mensaje += ` ${faltanOpcionales.map((c) => ETIQUETAS_CAMPO[c].split(" (")[0]).join(", ")} ${verbo}: puedes dejarlo sin indicar si tu fichero no lo trae.`;
+        }
+        avisoAuto.textContent = mensaje;
         mostrar(avisoAuto);
       }
     }
@@ -840,6 +856,13 @@ function actualizarEstadoMapeo() {
   el("boton-calcular").disabled = false;
 }
 
+// El circulo del resumen plegado usa un icono distinto segun el estado:
+// un check solo cuando de verdad esta todo listo para calcular, un aviso
+// (¡ nunca un check !) mientras falte algo obligatorio o haya un
+// conflicto — un check en ese caso diria "todo bien" cuando no lo esta.
+const ICONO_TICK_OK = '<svg width="9" height="7" viewBox="0 0 9 7" fill="none" aria-hidden="true"><path d="M1 3.4L3.3 5.7L8 1" stroke="#fff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const ICONO_TICK_AVISO = '<svg width="2" height="7.4" viewBox="0 0 2 7.4" fill="none" aria-hidden="true"><path d="M1 0.7V4.3" stroke="#fff" stroke-width="1.6" stroke-linecap="round"/><circle cx="1" cy="6.5" r="0.9" fill="#fff"/></svg>';
+
 function actualizarResumenMapeoTexto() {
   const todosLosCampos = [...CAMPOS_OBLIGATORIOS, ...CAMPOS_OPCIONALES];
   const valores = valoresDelFormulario();
@@ -857,10 +880,12 @@ function actualizarResumenMapeoTexto() {
       : "Hay columnas repetidas";
     accion.textContent = "Completar";
     tick.classList.add("alerta");
+    tick.innerHTML = ICONO_TICK_AVISO;
   } else {
-    texto.textContent = `${nMapeados} de ${todosLosCampos.length} columnas detectadas`;
+    texto.textContent = `${nMapeados} de ${todosLosCampos.length} campos completados`;
     accion.textContent = "Revisar";
     tick.classList.remove("alerta");
+    tick.innerHTML = ICONO_TICK_OK;
   }
 }
 
@@ -1009,12 +1034,27 @@ function pintarResultadoCard(resultado) {
   const claseKind = negativo ? "perdida" : "";
   const etiquetaKind = negativo ? "Pérdida patrimonial" : "Ganancia patrimonial";
 
+  // "Bloqueado por recompra" es siempre un importe positivo que se SUMA al
+  // bruto (por eso Declarable = Bruto + Bloqueado): bloquear una perdida la
+  // hace menos negativa, nunca mas positiva de lo que ya era la venta. Pero
+  // enseñado a secas entre "Bruto" y "Declarable" se lee como si la
+  // recompra hubiera generado dinero extra. Con un "+" explicito y la nota
+  // de que es perdida diferida (no una ganancia) queda claro que no se
+  // declara ya, no que haya aparecido de la nada.
+  const hayBloqueado = parseFloat(bloqueado_patrimonial) !== 0;
+  const filaBloqueado = hayBloqueado
+    ? `
+      <div class="kv"><span class="k">Bloqueado por recompra</span><span class="v">+${formatoDinero(bloqueado_patrimonial)}</span></div>
+      <p class="nota-bloqueo">Pérdida bloqueada por la regla de los 2 meses (art. 33.5.f LIRPF): no computa en este ejercicio, se traslada al coste del lote recomprado.</p>
+    `
+    : `<div class="kv"><span class="k">Bloqueado por recompra</span><span class="v">${formatoDinero(bloqueado_patrimonial)}</span></div>`;
+
   const bloqueGanancias = `
     <div>
       <p class="lbl">Ganancias patrimoniales</p>
       <div style="margin-top:0.6rem">
         <div class="kv"><span class="k">Bruto de las ventas</span><span class="v">${formatoDinero(bruto_patrimonial)}</span></div>
-        <div class="kv"><span class="k">Bloqueado por recompra</span><span class="v">${formatoDinero(bloqueado_patrimonial)}</span></div>
+        ${filaBloqueado}
         <div class="kv"><span class="k">Declarable</span><span class="v fuerte">${formatoDinero(ganancia_patrimonial)}</span></div>
       </div>
     </div>
