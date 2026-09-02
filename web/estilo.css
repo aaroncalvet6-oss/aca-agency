@@ -282,6 +282,20 @@ select, input[type="text"], input[type="number"], input[type="date"] {
 .kv .v.fuerte { font-weight: 600; }
 .nota-bloqueo { font-size: 0.78rem; color: var(--text-3); line-height: 1.5; padding: 0.1rem 0 0.3rem; border-top: 1px solid var(--line-2); margin-top: -1px; }
 
+/* ── selector de ejercicio fiscal ── */
+.cabecera-ejercicio { display: flex; flex-direction: column; gap: 0.7rem; }
+.selector-ejercicio-fila { display: flex; align-items: center; gap: 0.8rem; flex-wrap: wrap; }
+.pills-ejercicio { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+.pill-ejercicio {
+  font: inherit; font-family: var(--f-mono); font-size: 0.82rem; font-variant-numeric: tabular-nums;
+  padding: 0.35rem 0.85rem; border-radius: 999px; border: 1px solid var(--line);
+  background: var(--surface-2); color: var(--text-2); cursor: pointer;
+}
+.pill-ejercicio:hover { border-color: var(--accent); color: var(--text); }
+.pill-ejercicio.activo { background: var(--accent); border-color: var(--accent); color: #FFF; font-weight: 600; }
+.nota-fifo { font-size: 0.83rem; color: var(--text-2); line-height: 1.55; }
+.nota-fifo b { color: var(--text); font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+
 .sec { padding: 1.4rem 1.5rem; border-top: 1px solid var(--line-2); }
 .sec h3 { font-size: 1.05rem; margin-bottom: 0.2rem; }
 .sec .cap { font-size: 0.86rem; color: var(--text-2); margin-bottom: 1rem; font-family: var(--f-mono); }

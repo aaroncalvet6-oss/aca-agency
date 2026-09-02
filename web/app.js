@@ -54,18 +54,15 @@ def _dinero_multi(valor):
     return str(valor.quantize(Decimal("0.01")))
 
 
-def _resumen_dividendos_multi(dividendos_por_valor):
-    resumen = lector_csv.resumir_dividendos(dividendos_por_valor)
-    a_declarar = resumen["bruto_total"] - resumen["retencion_total"]
-    return {
-        "bruto_total": _dinero_multi(resumen["bruto_total"]),
-        "retencion_total": _dinero_multi(resumen["retencion_total"]),
-        "a_declarar_total": _dinero_multi(a_declarar),
-        "por_valor": {
-            valor: {"bruto": _dinero_multi(d["bruto"]), "retencion": _dinero_multi(d["retencion"])}
-            for valor, d in resumen["por_valor"].items()
-        },
-    }
+def _anio(fecha_str):
+    # lector_csv.leer_operaciones siempre da fechas "DD/MM/AAAA" (4 digitos
+    # de año), asi que comparar estas cadenas como texto ordena igual que
+    # comparar los años como numeros.
+    return fecha_str.split("/")[-1]
+
+
+def _anios_de_dividendos(dividendos_por_valor):
+    return {_anio(d["fecha"]) for divs in dividendos_por_valor.values() for d in divs}
 
 
 def _participaciones_por_venta(operaciones, detalle_ventas):
@@ -82,8 +79,59 @@ def _participaciones_por_venta(operaciones, detalle_ventas):
     return [str(venta["acciones"]) for venta in ventas_ordenadas]
 
 
-def _anios_de_dividendos(dividendos_por_valor):
-    return {d["fecha"].split("/")[-1] for divs in dividendos_por_valor.values() for d in divs}
+def _lotes_pendientes_al_cierre(operaciones, anio_cierre):
+    # Cuantas acciones de cada compra (en el mismo orden cronologico que usa
+    # el FIFO real) seguian sin vender al cierre de "anio_cierre", SIN volver
+    # a ejecutar calcular_desglose: el FIFO consume siempre las compras mas
+    # antiguas primero, asi que basta con saber cuantas acciones en total se
+    # habian vendido ya a esa fecha (de cualquier año hasta ese cierre,
+    # inclusive) e ir descontando esa cantidad de las compras en orden. La
+    # regla de los 2 meses no cambia esto en ningun caso: solo ajusta el
+    # COSTE fiscal de un lote, nunca cuantas acciones quedan ni en que orden
+    # se consumen, asi que este calculo de cantidades es exacto aunque no
+    # repita la parte monetaria (que ya ha calculado calcular_desglose una
+    # unica vez, mas arriba).
+    compras = sorted(
+        (op for op in operaciones if op["tipo"] == "compra" and _anio(op["fecha"]) <= anio_cierre),
+        key=lambda op: _fecha_para_ordenar(op["fecha"]),
+    )
+    vendido_hasta_cierre = sum(
+        (Decimal(str(op["acciones"])) for op in operaciones
+         if op["tipo"] == "venta" and _anio(op["fecha"]) <= anio_cierre),
+        Decimal("0"),
+    )
+
+    pendientes = []
+    restante = vendido_hasta_cierre
+    for compra in compras:
+        acciones = Decimal(str(compra["acciones"]))
+        consumidas = min(acciones, restante)
+        quedan = acciones - consumidas
+        restante -= consumidas
+        if quedan > 0:
+            pendientes.append({"fecha": compra["fecha"], "acciones": str(quedan)})
+    return pendientes
+
+
+def _resumen_dividendos_anio(dividendos_por_valor, anio):
+    bruto_total = Decimal("0")
+    retencion_total = Decimal("0")
+    por_valor = {}
+    for valor, dividendos in dividendos_por_valor.items():
+        del_anio = [d for d in dividendos if _anio(d["fecha"]) == anio]
+        if not del_anio:
+            continue
+        bruto_valor = sum((d["bruto"] for d in del_anio), Decimal("0"))
+        retencion_valor = sum((d["retencion"] for d in del_anio), Decimal("0"))
+        por_valor[valor] = {"bruto": _dinero_multi(bruto_valor), "retencion": _dinero_multi(retencion_valor)}
+        bruto_total += bruto_valor
+        retencion_total += retencion_valor
+    return {
+        "bruto_total": _dinero_multi(bruto_total),
+        "retencion_total": _dinero_multi(retencion_total),
+        "a_declarar_total": _dinero_multi(bruto_total - retencion_total),
+        "por_valor": por_valor,
+    }
 
 
 def procesar_csvs_multi(ficheros, mapeo, tipos=None, comision_en_divisa_operacion=False):
@@ -91,13 +139,13 @@ def procesar_csvs_multi(ficheros, mapeo, tipos=None, comision_en_divisa_operacio
         "frescura_bce": motor_web.info_frescura_bce(),
         "error_lectura": None,
         "avisos_lectura": [],
-        "valores": {},
-        "dividendos": None,
-        "ejercicio_fiscal": [],
-        "totales": {
-            "ganancia_patrimonial": None, "bruto_patrimonial": None, "bloqueado_patrimonial": None,
-            "completo": True, "motivo": None,
-        },
+        "completo": True,
+        "motivo": None,
+        "valores_con_error": {},
+        "fifo_desde": None,
+        "anios_disponibles": [],
+        "anio_por_defecto": None,
+        "ejercicios": {},
     }
 
     varios = len(ficheros) > 1
@@ -114,8 +162,8 @@ def procesar_csvs_multi(ficheros, mapeo, tipos=None, comision_en_divisa_operacio
         except lector_csv.ErrorLectorCSV as error:
             mensaje = f"{nombre}: {error}" if varios else str(error)
             resultado["error_lectura"] = mensaje
-            resultado["totales"]["completo"] = False
-            resultado["totales"]["motivo"] = mensaje
+            resultado["completo"] = False
+            resultado["motivo"] = mensaje
             return resultado
 
         prefijo = f"{nombre} - " if varios else ""
@@ -129,25 +177,37 @@ def procesar_csvs_multi(ficheros, mapeo, tipos=None, comision_en_divisa_operacio
     resultado["avisos_lectura"] = avisos_total
 
     if not operaciones_por_valor_total:
-        resultado["totales"]["completo"] = False
-        resultado["totales"]["motivo"] = (
+        resultado["completo"] = False
+        resultado["motivo"] = (
             "No se ha podido leer ninguna compra o venta de este fichero "
             f"({len(avisos_total)} fila(s) ignorada(s)); revisa el mapeo de columnas."
             if avisos_total else
             "El fichero no tiene ninguna compra o venta que calcular."
         )
-        resultado["dividendos"] = _resumen_dividendos_multi(dividendos_por_valor_total)
-        resultado["ejercicio_fiscal"] = sorted(_anios_de_dividendos(dividendos_por_valor_total))
+        anios_divs = sorted(_anios_de_dividendos(dividendos_por_valor_total))
+        resultado["anios_disponibles"] = anios_divs
+        for anio in anios_divs:
+            resultado["ejercicios"][anio] = {
+                "totales": {"bruto": None, "bloqueado": None, "declarable": None},
+                "dividendos": _resumen_dividendos_anio(dividendos_por_valor_total, anio),
+                "valores": {},
+            }
         return resultado
 
-    ganancia_total = Decimal("0")
-    bruto_total = Decimal("0")
-    bloqueado_total = Decimal("0")
+    # La compra mas antigua de TODO el fichero (cualquier valor): el FIFO
+    # arranca aqui, aunque el usuario solo quiera ver un ejercicio posterior
+    # -- hace falta el historico completo para saber el coste real de lo
+    # vendido este año, no solo las operaciones de este año.
+    todas_las_compras = [
+        op for ops in operaciones_por_valor_total.values() for op in ops if op["tipo"] == "compra"
+    ]
+    if todas_las_compras:
+        resultado["fifo_desde"] = min(
+            (op["fecha"] for op in todas_las_compras), key=_fecha_para_ordenar
+        )
+
+    resultados_por_valor = {}
     algun_error = False
-    # El ejercicio fiscal lo marca la fecha de la VENTA (o del dividendo si
-    # no hay ventas): una compra sin vender todavia no genera nada que
-    # declarar este año, asi que no cuenta para decidir el ejercicio.
-    anios_declarables = _anios_de_dividendos(dividendos_por_valor_total)
 
     for valor, operaciones in operaciones_por_valor_total.items():
         try:
@@ -155,51 +215,90 @@ def procesar_csvs_multi(ficheros, mapeo, tipos=None, comision_en_divisa_operacio
                 ganancia, lotes_finales, detalle_ventas = calcular_desglose(operaciones)
         except Exception as error:
             algun_error = True
-            resultado["valores"][valor] = {
-                "error": str(error), "ganancia": None, "desglose": None, "lotes_pendientes": None,
-            }
+            resultado["valores_con_error"][valor] = str(error)
             continue
 
-        bruto_valor = sum((fila["resultado_bruto"] for fila in detalle_ventas), Decimal("0"))
-        bloqueado_valor = sum((fila["bloqueado"] for fila in detalle_ventas), Decimal("0"))
-        participaciones = _participaciones_por_venta(operaciones, detalle_ventas)
-        participaciones_valor = sum((Decimal(p) for p in participaciones), Decimal("0"))
-
-        ganancia_total += ganancia
-        bruto_total += bruto_valor
-        bloqueado_total += bloqueado_valor
-        anios_declarables.update(fila["fecha"].split("/")[-1] for fila in detalle_ventas)
-        resultado["valores"][valor] = {
-            "error": None,
-            "ganancia": _dinero_multi(ganancia),
-            "bruto_total": _dinero_multi(bruto_valor),
-            "bloqueado_total": _dinero_multi(bloqueado_valor),
-            "participaciones_total": str(participaciones_valor),
-            "desglose": [
-                {
-                    "fecha": fila["fecha"],
-                    "participaciones": participaciones[idx],
-                    "resultado_bruto": _dinero_multi(fila["resultado_bruto"]),
-                    "bloqueado": _dinero_multi(fila["bloqueado"]),
-                    "resultado_declarado": _dinero_multi(fila["resultado_declarado"]),
-                }
-                for idx, fila in enumerate(detalle_ventas)
-            ],
-            "lotes_pendientes": [
-                {"fecha": lote["fecha"], "acciones": str(lote["acciones"])} for lote in lotes_finales
-            ],
+        resultados_por_valor[valor] = {
+            "operaciones": operaciones,
+            "detalle_ventas": detalle_ventas,
+            "participaciones": _participaciones_por_venta(operaciones, detalle_ventas),
         }
 
-    resultado["dividendos"] = _resumen_dividendos_multi(dividendos_por_valor_total)
-    resultado["ejercicio_fiscal"] = sorted(anios_declarables)
-
-    resultado["totales"]["completo"] = not algun_error
-    resultado["totales"]["ganancia_patrimonial"] = None if algun_error else _dinero_multi(ganancia_total)
-    resultado["totales"]["bruto_patrimonial"] = None if algun_error else _dinero_multi(bruto_total)
-    resultado["totales"]["bloqueado_patrimonial"] = None if algun_error else _dinero_multi(bloqueado_total)
+    resultado["completo"] = not algun_error
     if algun_error:
-        n_errores = sum(1 for v in resultado["valores"].values() if v["error"])
-        resultado["totales"]["motivo"] = f"{n_errores} valor(es) no se han podido calcular (mira el detalle de cada uno)."
+        n_errores = len(resultado["valores_con_error"])
+        resultado["motivo"] = f"{n_errores} valor(es) no se han podido calcular (mira el detalle de cada uno)."
+        return resultado
+
+    # Un año entra en la lista si hay algo que declarar en el (una venta o
+    # un dividendo): un año en el que solo hay compras no genera nada que
+    # declarar todavia, asi que no se le dedica un ejercicio propio.
+    anios = _anios_de_dividendos(dividendos_por_valor_total)
+    for r in resultados_por_valor.values():
+        anios.update(_anio(fila["fecha"]) for fila in r["detalle_ventas"])
+    anios = sorted(anios)
+    resultado["anios_disponibles"] = anios
+
+    anios_con_ventas = sorted({
+        _anio(fila["fecha"])
+        for r in resultados_por_valor.values()
+        for fila in r["detalle_ventas"]
+    })
+    resultado["anio_por_defecto"] = anios_con_ventas[-1] if anios_con_ventas else (anios[-1] if anios else None)
+
+    for anio in anios:
+        ganancia_anio = Decimal("0")
+        bruto_anio = Decimal("0")
+        bloqueado_anio = Decimal("0")
+        valores_anio = {}
+
+        for valor, r in resultados_por_valor.items():
+            desglose_anio = [fila for fila in r["detalle_ventas"] if _anio(fila["fecha"]) == anio]
+            participaciones_anio = [
+                p for fila, p in zip(r["detalle_ventas"], r["participaciones"])
+                if _anio(fila["fecha"]) == anio
+            ]
+            lotes_pendientes = _lotes_pendientes_al_cierre(r["operaciones"], anio)
+
+            if not desglose_anio and not lotes_pendientes:
+                continue
+
+            bruto_valor = sum((fila["resultado_bruto"] for fila in desglose_anio), Decimal("0"))
+            bloqueado_valor = sum((fila["bloqueado"] for fila in desglose_anio), Decimal("0"))
+            ganancia_valor = sum((fila["resultado_declarado"] for fila in desglose_anio), Decimal("0"))
+            participaciones_total_valor = sum((Decimal(p) for p in participaciones_anio), Decimal("0"))
+
+            ganancia_anio += ganancia_valor
+            bruto_anio += bruto_valor
+            bloqueado_anio += bloqueado_valor
+
+            valores_anio[valor] = {
+                "ganancia": _dinero_multi(ganancia_valor),
+                "bruto_total": _dinero_multi(bruto_valor),
+                "bloqueado_total": _dinero_multi(bloqueado_valor),
+                "participaciones_total": str(participaciones_total_valor),
+                "desglose": [
+                    {
+                        "fecha": fila["fecha"],
+                        "participaciones": participaciones_anio[idx],
+                        "resultado_bruto": _dinero_multi(fila["resultado_bruto"]),
+                        "bloqueado": _dinero_multi(fila["bloqueado"]),
+                        "resultado_declarado": _dinero_multi(fila["resultado_declarado"]),
+                    }
+                    for idx, fila in enumerate(desglose_anio)
+                ],
+                "lotes_pendientes": lotes_pendientes,
+            }
+
+        resultado["ejercicios"][anio] = {
+            "totales": {
+                "bruto": _dinero_multi(bruto_anio),
+                "bloqueado": _dinero_multi(bloqueado_anio),
+                "declarable": _dinero_multi(ganancia_anio),
+            },
+            "dividendos": _resumen_dividendos_anio(dividendos_por_valor_total, anio),
+            "valores": valores_anio,
+        }
 
     return resultado
 `;
@@ -211,6 +310,7 @@ let procesarCsvsMulti = null;
 let ficherosActuales = [];   // [{nombre, tamano, texto}, ...]
 let cabecerasActuales = [];
 let ultimoResultado = null;
+let anioSeleccionado = null;   // ejercicio fiscal que se está mostrando ahora mismo
 let nombrePresetActivo = null;   // null = mapeo a mano, sin preset asociado
 
 const el = (id) => document.getElementById(id);
@@ -960,6 +1060,12 @@ function calcular() {
   // no obligar a repetirlo si se sube otro fichero con estas cabeceras.
   recordarMapeoLocal(cabecerasActuales, mapeo, comisionEnDivisaOperacion);
 
+  // El FIFO ya se ha calculado UNA sola vez (dentro de procesarCsvsMulti,
+  // arriba) sobre todo el histórico del fichero. A partir de aquí solo se
+  // elige qué ejercicio fiscal se enseña; cambiar de año no vuelve a tocar
+  // Python, solo relee resultado.ejercicios[año], que ya está calculado.
+  anioSeleccionado = resultado.anio_por_defecto || (resultado.anios_disponibles[0] ?? null);
+
   pintarResultado(resultado);
   mostrar(el("zona-resultado"));
   actualizarPasos("resultado");
@@ -967,17 +1073,52 @@ function calcular() {
 }
 
 function pintarResultado(resultado) {
+  pintarCabeceraEjercicio(resultado);
   pintarResultadoCard(resultado);
   pintarAvisos(resultado.avisos_lectura);
   pintarDondeVaEsto(resultado);
-
-  const hayAlgoQueDescargar = Object.values(resultado.valores).some((v) => v.desglose && v.desglose.length);
-  el("zona-descarga").classList.toggle("oculto", !hayAlgoQueDescargar);
+  pintarDescarga(resultado);
 }
 
-function etiquetaEjercicio(anios) {
-  if (!anios || anios.length === 0) return "";
-  return anios.length === 1 ? `Ejercicio ${anios[0]}` : `Ejercicios ${anios.join(" y ")}`;
+// Selector de ejercicio + la nota de que el FIFO arranca desde la primera
+// compra del fichero. Vive fuera de resultado-card porque no cambia al
+// cambiar de año (el propio selector solo tiene sentido ahí), y así el
+// usuario ve primero POR QUÉ hace falta el histórico completo, antes que
+// la cifra de un año concreto.
+function pintarCabeceraEjercicio(resultado) {
+  const contenedor = el("cabecera-ejercicio");
+  const anios = resultado.anios_disponibles || [];
+
+  if (!resultado.completo || anios.length === 0) { ocultar(contenedor); return; }
+
+  const selector = el("selector-ejercicio");
+  if (anios.length > 1) {
+    selector.innerHTML = "";
+    for (const anio of anios) {
+      const boton = document.createElement("button");
+      boton.type = "button";
+      boton.className = "pill-ejercicio" + (anio === anioSeleccionado ? " activo" : "");
+      boton.textContent = anio;
+      boton.addEventListener("click", () => {
+        if (anio === anioSeleccionado) return;
+        anioSeleccionado = anio;
+        pintarResultado(ultimoResultado);   // solo relee datos ya calculados, no vuelve a llamar a Python
+      });
+      selector.appendChild(boton);
+    }
+    mostrar(el("selector-ejercicio-fila"));
+  } else {
+    ocultar(el("selector-ejercicio-fila"));
+  }
+
+  const nota = el("nota-fifo-historico");
+  nota.innerHTML = resultado.fifo_desde
+    ? `El cálculo del FIFO empieza en <b>${escaparHtml(resultado.fifo_desde)}</b>, la compra más antigua de
+       este fichero, aunque sea de un ejercicio anterior al que ves aquí: hace falta el historial completo
+       de compras para saber el coste real de lo que se vende cada año, no solo las operaciones de ese año.`
+    : "";
+
+  mostrar(contenedor);
 }
 
 function bloqueDividendos(dividendos) {
@@ -994,43 +1135,60 @@ function bloqueDividendos(dividendos) {
   `;
 }
 
-// El bloque central de toda la página: la cifra, y justo debajo el
-// desglose de ganancias patrimoniales y dividendos, y por cada valor su
-// tabla de ventas y lo que le queda sin vender.
+// El bloque central de toda la página: la cifra del ejercicio seleccionado,
+// y justo debajo el desglose de ganancias patrimoniales y dividendos DE ESE
+// AÑO, y por cada valor su tabla de ventas de ese año y lo que le queda sin
+// vender al cierre de ese año.
 function pintarResultadoCard(resultado) {
   const card = el("resultado-card");
-  const { completo, ganancia_patrimonial, bruto_patrimonial, bloqueado_patrimonial, motivo } = resultado.totales;
-  const eyebrow = etiquetaEjercicio(resultado.ejercicio_fiscal);
-  const bloqueDivs = bloqueDividendos(resultado.dividendos);
 
-  if (!completo) {
+  if (!resultado.completo) {
     // Nunca se muestra un importe aqui (ni "0,00 €"): si no es "completo"
     // es que no hay un total fiable que mostrar, y un numero con aspecto
-    // de valido induciria a pensar que ya esta calculado. Los dividendos
-    // son independientes del FIFO de ganancias patrimoniales, asi que se
-    // muestran igualmente si los hay.
+    // de valido induciria a pensar que ya esta calculado.
+    const errores = Object.entries(resultado.valores_con_error || {});
+    const detalleErrores = errores.length
+      ? `<ul class="lista-avisos" style="margin-top:0.9rem">${errores
+          .map(([valor, error]) => `<li><b>${escaparHtml(valor)}</b>: ${escaparHtml(error)}</li>`)
+          .join("")}</ul>`
+      : "";
     card.innerHTML = `
       <div class="head">
-        ${eyebrow ? `<p class="ej mono">${escaparHtml(eyebrow)}</p>` : ""}
         <p class="kind plano">Sin calcular</p>
         <p class="big chica">No se ha podido calcular</p>
-        <p class="note">${escaparHtml(motivo || "Revisa los avisos y el detalle de cada valor más abajo.")}</p>
+        <p class="note">${escaparHtml(resultado.motivo || "Revisa los avisos y el detalle de cada valor más abajo.")}</p>
+        ${detalleErrores}
       </div>
-      ${bloqueDivs ? `<div class="split2">${bloqueDivs}</div>` : ""}
     `;
     return;
   }
 
-  const valoresOk = Object.entries(resultado.valores).filter(([, d]) => !d.error);
-  const nValores = valoresOk.length;
-  const nVentas = valoresOk.reduce((acc, [, d]) => acc + d.desglose.length, 0);
+  const anios = resultado.anios_disponibles || [];
+  if (anios.length === 0) {
+    card.innerHTML = `
+      <div class="head">
+        <p class="kind plano">Nada que declarar todavía</p>
+        <p class="big chica">Sin ventas ni dividendos</p>
+        <p class="note">Este fichero solo tiene compras: no genera nada que declarar hasta que vendas algo o cobres un dividendo.</p>
+      </div>
+    `;
+    return;
+  }
+
+  const ejercicio = resultado.ejercicios[anioSeleccionado];
+  const { bruto, bloqueado, declarable } = ejercicio.totales;
+  const bloqueDivs = bloqueDividendos(ejercicio.dividendos);
+
+  const valoresDelAnio = Object.entries(ejercicio.valores);
+  const nValores = valoresDelAnio.length;
+  const nVentas = valoresDelAnio.reduce((acc, [, d]) => acc + d.desglose.length, 0);
   const piezasEyebrow = [
-    eyebrow,
+    `Ejercicio ${anioSeleccionado}`,
     `${nValores} valor${nValores === 1 ? "" : "es"}`,
     `${nVentas} venta${nVentas === 1 ? "" : "s"}`,
   ].filter(Boolean).join(" · ");
 
-  const negativo = ganancia_patrimonial.trim().startsWith("-");
+  const negativo = declarable.trim().startsWith("-");
   const claseKind = negativo ? "perdida" : "";
   const etiquetaKind = negativo ? "Pérdida patrimonial" : "Ganancia patrimonial";
 
@@ -1041,33 +1199,33 @@ function pintarResultadoCard(resultado) {
   // recompra hubiera generado dinero extra. Con un "+" explicito y la nota
   // de que es perdida diferida (no una ganancia) queda claro que no se
   // declara ya, no que haya aparecido de la nada.
-  const hayBloqueado = parseFloat(bloqueado_patrimonial) !== 0;
+  const hayBloqueado = parseFloat(bloqueado) !== 0;
   const filaBloqueado = hayBloqueado
     ? `
-      <div class="kv"><span class="k">Bloqueado por recompra</span><span class="v">+${formatoDinero(bloqueado_patrimonial)}</span></div>
+      <div class="kv"><span class="k">Bloqueado por recompra</span><span class="v">+${formatoDinero(bloqueado)}</span></div>
       <p class="nota-bloqueo">Pérdida bloqueada por la regla de los 2 meses (art. 33.5.f LIRPF): no computa en este ejercicio, se traslada al coste del lote recomprado.</p>
     `
-    : `<div class="kv"><span class="k">Bloqueado por recompra</span><span class="v">${formatoDinero(bloqueado_patrimonial)}</span></div>`;
+    : `<div class="kv"><span class="k">Bloqueado por recompra</span><span class="v">${formatoDinero(bloqueado)}</span></div>`;
 
   const bloqueGanancias = `
     <div>
       <p class="lbl">Ganancias patrimoniales</p>
       <div style="margin-top:0.6rem">
-        <div class="kv"><span class="k">Bruto de las ventas</span><span class="v">${formatoDinero(bruto_patrimonial)}</span></div>
+        <div class="kv"><span class="k">Bruto de las ventas</span><span class="v">${formatoDinero(bruto)}</span></div>
         ${filaBloqueado}
-        <div class="kv"><span class="k">Declarable</span><span class="v fuerte">${formatoDinero(ganancia_patrimonial)}</span></div>
+        <div class="kv"><span class="k">Declarable</span><span class="v fuerte">${formatoDinero(declarable)}</span></div>
       </div>
     </div>
   `;
 
-  const secciones = Object.entries(resultado.valores).map(([valor, datos]) => htmlSeccionValor(valor, datos)).join("");
+  const secciones = valoresDelAnio.map(([valor, datos]) => htmlSeccionValor(valor, datos)).join("");
 
   card.innerHTML = `
     <div class="head">
       <p class="ej mono">${escaparHtml(piezasEyebrow)}</p>
       <p class="kind ${claseKind}">${etiquetaKind}</p>
-      <p class="big">${formatoDinero(ganancia_patrimonial)}</p>
-      <p class="note">Suma del FIFO de todos los valores del fichero, con la regla de los dos meses ya aplicada.</p>
+      <p class="big">${formatoDinero(declarable)}</p>
+      <p class="note">Suma del FIFO de todos los valores del fichero para las ventas de ${anioSeleccionado}, con la regla de los dos meses ya aplicada.</p>
     </div>
     <div class="split2">${bloqueGanancias}${bloqueDivs}</div>
     ${secciones}
@@ -1075,22 +1233,13 @@ function pintarResultadoCard(resultado) {
 }
 
 function htmlSeccionValor(valor, datos) {
-  if (datos.error) {
-    return `
-      <div class="sec">
-        <h3>${escaparHtml(valor)}</h3>
-        <p class="error-valor">No se puede calcular: ${escaparHtml(datos.error)}</p>
-      </div>
-    `;
-  }
-
   const htmlLotes = htmlLotesPendientes(datos.lotes_pendientes);
 
   if (!datos.desglose.length) {
     return `
       <div class="sec">
         <h3>${escaparHtml(valor)}</h3>
-        <p class="cap">Sin ventas en este fichero.</p>
+        <p class="cap">Sin ventas en este ejercicio.</p>
         ${htmlLotes}
       </div>
     `;
@@ -1135,8 +1284,8 @@ function htmlLotesPendientes(lotes) {
   const items = lotes.map((l) => `<li>${formatoCantidad(l.acciones)} participaciones compradas el ${l.fecha}</li>`).join("");
   return `
     <div class="rest">
-      Quedan sin vender — siguen en tu cartera, no generan ganancia ahora, y su coste (ya ajustado por la
-      regla de los 2 meses si aplica) es el que se usará cuando las vendas:
+      Seguían sin vender al cierre de ${anioSeleccionado} — su coste (ya ajustado por la regla de los 2 meses
+      si aplica) es el que cuenta cuando por fin se vendan:
       <ul>${items}</ul>
     </div>
   `;
@@ -1148,16 +1297,18 @@ function htmlLotesPendientes(lotes) {
 // el apartado en palabras y remitimos al borrador o a una gestoría.
 function pintarDondeVaEsto(resultado) {
   const contenedor = el("donde-va-esto");
-  if (!resultado.totales.completo) { ocultar(contenedor); return; }
+  const anios = resultado.anios_disponibles || [];
+  if (!resultado.completo || anios.length === 0) { ocultar(contenedor); return; }
 
-  const hayDividendos = resultado.dividendos && Object.keys(resultado.dividendos.por_valor).length > 0;
+  const ejercicio = resultado.ejercicios[anioSeleccionado];
+  const hayDividendos = ejercicio.dividendos && Object.keys(ejercicio.dividendos.por_valor).length > 0;
 
   contenedor.innerHTML = `
-    <h3>Dónde va esto en tu declaración</h3>
-    <p><b>Los ${formatoDinero(resultado.totales.ganancia_patrimonial)}</b> van en el apartado de ganancias y
+    <h3>Dónde va esto en tu declaración de ${anioSeleccionado}</h3>
+    <p><b>Los ${formatoDinero(ejercicio.totales.declarable)}</b> van en el apartado de ganancias y
     pérdidas patrimoniales derivadas de transmisiones, dentro de la base imponible del ahorro.</p>
     ${hayDividendos ? `
-    <p><b>Los ${formatoDinero(resultado.dividendos.bruto_total)} de dividendos</b> van en un apartado
+    <p><b>Los ${formatoDinero(ejercicio.dividendos.bruto_total)} de dividendos</b> van en un apartado
     distinto: rendimientos del capital mobiliario.</p>` : ""}
     <p class="warn-note">
       Los números de casilla concretos cambian cada campaña. Compruébalos en el borrador de Renta Web o
@@ -1179,16 +1330,29 @@ function pintarAvisos(avisos) {
   mostrar(contenedor);
 }
 
+function pintarDescarga(resultado) {
+  const anios = resultado.anios_disponibles || [];
+  const hayAlgoQueDescargar = resultado.completo && anios.some((anio) =>
+    Object.values(resultado.ejercicios[anio].valores).some((v) => v.desglose && v.desglose.length)
+  );
+  el("zona-descarga").classList.toggle("oculto", !hayAlgoQueDescargar);
+}
+
 // --- Paso 4: descargar el desglose en CSV (gratis, sin registro) --------
+//
+// Incluye TODOS los ejercicios del fichero (no solo el que se ve en
+// pantalla ahora mismo), con una columna "Ejercicio" añadida: es el
+// fichero de justificación completo, no una foto de la vista actual.
 
 function descargarDesgloseCSV() {
-  if (!ultimoResultado) return;
+  if (!ultimoResultado || !ultimoResultado.completo) return;
 
-  const filas = [["Valor", "Fecha venta", "Participaciones", "Resultado bruto", "Bloqueado (regla 2 meses)", "Resultado declarado"]];
-  for (const [valor, datos] of Object.entries(ultimoResultado.valores)) {
-    if (datos.error || !datos.desglose) continue;
-    for (const op of datos.desglose) {
-      filas.push([valor, op.fecha, op.participaciones, op.resultado_bruto, op.bloqueado, op.resultado_declarado]);
+  const filas = [["Ejercicio", "Valor", "Fecha venta", "Participaciones", "Resultado bruto", "Bloqueado (regla 2 meses)", "Resultado declarado"]];
+  for (const anio of ultimoResultado.anios_disponibles || []) {
+    for (const [valor, datos] of Object.entries(ultimoResultado.ejercicios[anio].valores)) {
+      for (const op of datos.desglose) {
+        filas.push([anio, valor, op.fecha, op.participaciones, op.resultado_bruto, op.bloqueado, op.resultado_declarado]);
+      }
     }
   }
 
