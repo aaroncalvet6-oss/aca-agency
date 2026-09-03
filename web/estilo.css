@@ -6,18 +6,66 @@
    en ganancias / rojo en pérdidas / ámbar en bloqueado. La cifra principal
    va en Instrument Sans 600 con tabular-nums, coma decimal española en
    toda la página (la conversión número→texto vive en cada app.js) y el
-   signo menos es siempre el tipográfico real (− U+2212). */
+   signo menos es siempre el tipográfico real (− U+2212).
+
+   El oscuro es el tema por defecto (no sigue prefers-color-scheme: el
+   usuario decide, nunca el sistema) y por eso es el que lleva el diseño
+   principal aquí abajo. web/tema.js pone data-theme="light" en <html>
+   cuando el usuario activa el interruptor de la cabecera, y esa es la
+   ÚNICA condición que cambia de tema — de ahí el bloque
+   :root[data-theme="light"] con la paleta clara original de la maqueta.
+
+   --hair es el divisor discreto de dentro de una tarjeta (filas, celdas).
+   --hair-strong es el borde de un límite funcional (tarjeta, zona de
+   arrastrar, círculo de paso): en claro no hace falta (la sombra ya
+   separa la tarjeta del fondo), pero en oscuro una sombra sobre un fondo
+   casi negro no se nota, así que --card-border añade ahí un borde real
+   en vez de depender solo de --sh-1/--sh-2. Contraste comprobado
+   (WCAG): --faint 4.8:1 y --muted 5.9:1 sobre --surface (antes --faint
+   daba 3.45:1, por debajo del 4.5:1 exigido a texto normal). */
 
 :root {
   --f-display: "Bricolage Grotesque", "Instrument Sans", system-ui, sans-serif;
   --f-sans:    "Instrument Sans", system-ui, -apple-system, sans-serif;
   --f-mono:    "JetBrains Mono", ui-monospace, Menlo, monospace;
 
+  --ground:   #090B10;
+  --surface:  #12151D;
+  --raised:   #171B25;
+  --sunken:   #0E1119;
+  --hair:     #2E3644;
+  --hair-strong: #56657F;
+
+  --ink:      #F4F6FA;
+  --text:     #C9D0DC;
+  --muted:    #8A93A3;
+  --faint:    #7A8494;
+
+  --accent:   #8296FF;
+  --accent-s: #1A2040;
+  --gain:     #3DD9A0;
+  --gain-s:   #0F2A22;
+  --loss:     #FF7075;
+  --loss-s:   #2E1618;
+  --warn:     #E0A44E;
+  --warn-s:   #2A1F10;
+
+  --sh-1: 0 1px 2px rgba(0,0,0,.4);
+  --sh-2: 0 2px 6px rgba(0,0,0,.35), 0 12px 32px rgba(0,0,0,.45);
+  --card-border: 1px solid var(--hair-strong);
+
+  --r-lg: 16px;
+  --r-md: 11px;
+  --r-sm: 8px;
+}
+
+:root[data-theme="light"] {
   --ground:   #F7F8FA;
   --surface:  #FFFFFF;
   --raised:   #FFFFFF;
   --sunken:   #EFF1F5;
   --hair:     #E3E6ED;
+  --hair-strong: #E3E6ED;
 
   --ink:      #0B0D12;
   --text:     #2A2F3A;
@@ -35,66 +83,12 @@
 
   --sh-1: 0 1px 2px rgba(11,13,18,.05), 0 1px 3px rgba(11,13,18,.04);
   --sh-2: 0 2px 4px rgba(11,13,18,.04), 0 8px 24px rgba(11,13,18,.07);
-
-  --r-lg: 16px;
-  --r-md: 11px;
-  --r-sm: 8px;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --ground:   #090B10;
-    --surface:  #12151D;
-    --raised:   #171B25;
-    --sunken:   #0E1119;
-    --hair:     #242936;
-
-    --ink:      #F4F6FA;
-    --text:     #C9D0DC;
-    --muted:    #8A93A3;
-    --faint:    #636C7C;
-
-    --accent:   #8296FF;
-    --accent-s: #1A2040;
-    --gain:     #3DD9A0;
-    --gain-s:   #0F2A22;
-    --loss:     #FF7075;
-    --loss-s:   #2E1618;
-    --warn:     #E0A44E;
-    --warn-s:   #2A1F10;
-
-    --sh-1: 0 1px 2px rgba(0,0,0,.4);
-    --sh-2: 0 2px 6px rgba(0,0,0,.35), 0 12px 32px rgba(0,0,0,.45);
-  }
-}
-
-:root[data-theme="dark"] {
-  --ground:   #090B10;
-  --surface:  #12151D;
-  --raised:   #171B25;
-  --sunken:   #0E1119;
-  --hair:     #242936;
-
-  --ink:      #F4F6FA;
-  --text:     #C9D0DC;
-  --muted:    #8A93A3;
-  --faint:    #636C7C;
-
-  --accent:   #8296FF;
-  --accent-s: #1A2040;
-  --gain:     #3DD9A0;
-  --gain-s:   #0F2A22;
-  --loss:     #FF7075;
-  --loss-s:   #2E1618;
-  --warn:     #E0A44E;
-  --warn-s:   #2A1F10;
-
-  --sh-1: 0 1px 2px rgba(0,0,0,.4);
-  --sh-2: 0 2px 6px rgba(0,0,0,.35), 0 12px 32px rgba(0,0,0,.45);
+  --card-border: none;
 }
 
 * { box-sizing: border-box; }
-html { color-scheme: light dark; }
+html { color-scheme: dark; }
+html[data-theme="light"] { color-scheme: light; }
 
 body {
   margin: 0;
@@ -137,6 +131,19 @@ header.top .wrap { display: flex; align-items: center; justify-content: space-be
 .brand b { font-family: var(--f-display); font-size: 1.14rem; font-weight: 600; letter-spacing: -0.02em; color: var(--ink); }
 .brand b i { font-style: normal; color: var(--accent); }
 
+/* ── interruptor de tema: discreto, en la cabecera ── */
+.interruptor-tema {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 2rem; height: 2rem; padding: 0; flex: none;
+  border: 1px solid var(--hair); border-radius: 999px;
+  background: var(--sunken); color: var(--muted); cursor: pointer;
+}
+.interruptor-tema:hover { color: var(--ink); border-color: var(--hair-strong); }
+.interruptor-tema svg { display: block; }
+.interruptor-tema .icono-sol { display: none; }
+:root[data-theme="light"] .interruptor-tema .icono-sol { display: block; }
+:root[data-theme="light"] .interruptor-tema .icono-luna { display: none; }
+
 /* nav.herramientas: sin usar todavía — se añade al índice de cada página
    solo cuando exista de verdad, para no enlazar nunca a un 404. */
 nav.herramientas { background: var(--sunken); border-bottom: 1px solid var(--hair); }
@@ -173,23 +180,27 @@ nav.herramientas a[aria-current="page"] { color: var(--ink); border-bottom-color
 .hero.simple .sub { max-width: 38rem; }
 
 /* ── estado del motor (antes de que aparezcan los pasos) ── */
-.estado-motor {
-  display: flex; align-items: center; gap: 0.6rem;
-  color: var(--muted); font-size: 0.88rem;
-  padding: 1.1rem 0;
-}
+.estado-motor { color: var(--muted); font-size: 0.88rem; padding: 1.1rem 0; }
+.estado-motor-fila { display: flex; align-items: center; gap: 0.6rem; }
 .spinner {
   width: 14px; height: 14px; border: 2px solid var(--hair); border-top-color: var(--accent);
   border-radius: 50%; animation: girar 0.8s linear infinite; flex: none;
 }
 @keyframes girar { to { transform: rotate(360deg); } }
 .estado-motor.aviso-error { color: var(--loss); }
+.estado-motor.aviso-error .progreso-motor { display: none; }
+
+.progreso-motor { margin-top: 0.65rem; height: 4px; border-radius: 999px; background: var(--hair); overflow: hidden; }
+.progreso-motor-barra {
+  height: 100%; width: 0%; background: var(--accent); border-radius: inherit;
+  transition: width 0.2s ease-out;
+}
 
 /* ── pasos ── */
 .steps { background: var(--surface); border-bottom: 1px solid var(--hair); position: sticky; top: 0; z-index: 5; }
 .steps .wrap { display: flex; gap: 0; }
 .step { flex: 1; padding: 0.85rem 0.2rem; display: flex; align-items: center; justify-content: center; gap: 0.55rem; border-bottom: 2px solid transparent; }
-.step i { font-style: normal; width: 1.35rem; height: 1.35rem; border-radius: 50%; border: 1px solid var(--hair); display: grid; place-items: center; font-family: var(--f-mono); font-size: 0.66rem; color: var(--faint); flex-shrink: 0; }
+.step i { font-style: normal; width: 1.35rem; height: 1.35rem; border-radius: 50%; border: 1px solid var(--hair-strong); display: grid; place-items: center; font-family: var(--f-mono); font-size: 0.66rem; color: var(--faint); flex-shrink: 0; }
 .step span { font-size: 0.86rem; color: var(--faint); }
 .step.done i { background: var(--accent); border-color: var(--accent); color: #FFF; }
 .step.done span { color: var(--muted); }
@@ -198,13 +209,13 @@ nav.herramientas a[aria-current="page"] { color: var(--ink); border-bottom-color
 .step.on span { color: var(--ink); font-weight: 600; }
 
 main { padding: 2.4rem 0 4rem; }
-.card { background: var(--surface); box-shadow: var(--sh-1); border-radius: var(--r-lg); }
+.card { background: var(--surface); box-shadow: var(--sh-1); border: var(--card-border); border-radius: var(--r-lg); }
 .card + .card, .card + button, button.cta + .card { margin-top: 0.9rem; }
 .pad { padding: 1.4rem 1.5rem; }
 .pila { display: flex; flex-direction: column; gap: 0.9rem; }
 
 /* ── ficheros ── */
-.filerow { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 0.8rem 1rem; background: var(--sunken); border-radius: var(--r-md); }
+.filerow { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 0.8rem 1rem; background: var(--sunken); border: 1px solid var(--hair); border-radius: var(--r-md); }
 .filerow + .filerow { margin-top: 0.5rem; }
 .filerow .nm { display: flex; align-items: center; gap: 0.6rem; font-size: 0.92rem; font-family: var(--f-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .filerow .sz { color: var(--faint); font-size: 0.84rem; }
@@ -214,7 +225,7 @@ main { padding: 2.4rem 0 4rem; }
 .privacy b { color: var(--ink); font-weight: 600; }
 
 .zona-drop {
-  border: 1px dashed var(--hair); border-radius: var(--r-lg); padding: 2.2rem 1rem;
+  border: 1px dashed var(--hair-strong); border-radius: var(--r-lg); padding: 2.2rem 1rem;
   text-align: center; cursor: pointer; transition: border-color 0.15s, background 0.15s;
 }
 .zona-drop:hover, .zona-drop:focus-visible, .zona-drop.sobre-elemento { border-color: var(--accent); background: var(--accent-s); }
@@ -240,7 +251,7 @@ details.card > summary::-webkit-details-marker { display: none; }
 
 .notice {
   border-radius: var(--r-md); padding: 0.75rem 0.95rem; font-size: 0.85rem;
-  background: var(--sunken); color: var(--muted);
+  background: var(--sunken); border: 1px solid var(--hair); color: var(--muted);
 }
 .notice-info { background: var(--accent-s); color: var(--text); }
 .notice-error { background: var(--warn-s); color: var(--loss); }
@@ -253,7 +264,7 @@ details.card > summary::-webkit-details-marker { display: none; }
 
 select, input[type="text"], input[type="number"], input[type="date"] {
   font: inherit; font-size: 0.88rem; padding: 0.4rem 0.55rem;
-  border: 1px solid var(--hair); border-radius: var(--r-sm);
+  border: 1px solid var(--hair-strong); border-radius: var(--r-sm);
   background: var(--surface); color: var(--text); max-width: 100%;
 }
 
@@ -272,7 +283,7 @@ select, input[type="text"], input[type="number"], input[type="date"] {
 .vista-previa summary { cursor: pointer; color: var(--accent); }
 .vista-previa[open] summary { margin-bottom: 0.6rem; }
 
-.tabla-scroll { overflow-x: auto; margin-top: 0.5rem; border-radius: var(--r-md); box-shadow: var(--sh-1); }
+.tabla-scroll { overflow-x: auto; margin-top: 0.5rem; border: 1px solid var(--hair); border-radius: var(--r-md); box-shadow: var(--sh-1); }
 .tabla-scroll table { border-collapse: collapse; width: 100%; font-size: 0.78rem; white-space: nowrap; }
 .tabla-scroll th, .tabla-scroll td { padding: 0.35rem 0.55rem; border-bottom: 1px solid var(--hair); font-family: var(--f-mono); text-align: left; }
 .tabla-scroll tr:last-child td { border-bottom: none; }
@@ -294,7 +305,7 @@ select, input[type="text"], input[type="number"], input[type="date"] {
 .boton-secundario:hover { background: var(--accent-s); }
 
 /* ── resultado ── */
-.result { margin-top: 1.6rem; background: var(--surface); box-shadow: var(--sh-2); border-radius: var(--r-lg); overflow: hidden; }
+.result { margin-top: 1.6rem; background: var(--surface); box-shadow: var(--sh-2); border: var(--card-border); border-radius: var(--r-lg); overflow: hidden; }
 .result .head { padding: 1.9rem 1.9rem 1.7rem; border-bottom: 1px solid var(--hair); }
 .result .ej { font-family: var(--f-mono); font-size: 0.68rem; letter-spacing: 0.13em; text-transform: uppercase; color: var(--muted); }
 .result .kind { margin-top: 0.95rem; font-family: var(--f-mono); font-size: 0.7rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--gain); }
@@ -329,11 +340,11 @@ select, input[type="text"], input[type="number"], input[type="date"] {
 .pills-ejercicio { display: flex; gap: 0.4rem; flex-wrap: wrap; }
 .pill-ejercicio {
   font: inherit; font-family: var(--f-mono); font-size: 0.82rem; font-variant-numeric: tabular-nums;
-  padding: 0.35rem 0.85rem; border-radius: 999px; border: 0;
+  padding: 0.35rem 0.85rem; border-radius: 999px; border: 1px solid var(--hair);
   background: var(--surface); box-shadow: var(--sh-1); color: var(--muted); cursor: pointer;
 }
 .pill-ejercicio:hover { color: var(--ink); }
-.pill-ejercicio.activo { background: var(--ink); box-shadow: none; color: var(--ground); font-weight: 600; }
+.pill-ejercicio.activo { background: var(--ink); box-shadow: none; border-color: var(--ink); color: var(--ground); font-weight: 600; }
 .nota-fifo { font-size: 0.83rem; color: var(--muted); line-height: 1.55; }
 .nota-fifo b { color: var(--ink); font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
 
@@ -369,7 +380,7 @@ tfoot td { padding-top: 0.6rem; font-weight: 600; color: var(--ink); background:
 .where .warn-note { margin-top: 0.85rem; padding-top: 0.75rem; border-top: 1px solid var(--hair); font-size: 0.83rem; color: var(--warn); }
 
 /* ── descarga gratuita del desglose ── */
-.descarga { margin-top: 0.9rem; background: var(--surface); box-shadow: var(--sh-1); border-radius: var(--r-lg); padding: 1.4rem 1.5rem; display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 1.4rem; align-items: center; }
+.descarga { margin-top: 0.9rem; background: var(--surface); box-shadow: var(--sh-1); border: var(--card-border); border-radius: var(--r-lg); padding: 1.4rem 1.5rem; display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 1.4rem; align-items: center; }
 .descarga h3 { font-size: 1.05rem; color: var(--ink); }
 .descarga p { font-size: 0.87rem; color: var(--muted); margin-top: 0.35rem; max-width: 32rem; }
 .descarga .btn { padding: 0.85rem 1.4rem; background: var(--accent); color: #FFF; border: none; border-radius: var(--r-md); font-family: var(--f-sans); font-size: 0.92rem; font-weight: 600; white-space: nowrap; cursor: pointer; }

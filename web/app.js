@@ -17,6 +17,33 @@ const FICHEROS_MOTOR = [
 ];
 const RUTA_CACHE_BCE = "cache/eurofxref-hist.xml";
 
+// Los cuatro ficheros grandes que loadPyodide() pide de verdad (visto en el
+// propio código de pyodide.js): el núcleo WASM, la librería estándar de
+// Python, el manifiesto de paquetes y el glue JS. Ni numpy ni pandas ni
+// ningún otro paquete científico se cargan — el motor (calculadora.py /
+// lector_csv.py / tipos_cambio.py / motor_web.py) solo usa la librería
+// estándar, así que no hay nada más que pedir.
+const PYODIDE_INDEX_URL = "https://cdn.jsdelivr.net/pyodide/v0.26.4/full/";
+const PYODIDE_ARCHIVOS_GRANDES = [
+  "pyodide.asm.wasm",
+  "python_stdlib.zip",
+  "pyodide-lock.json",
+  "pyodide.asm.js",
+];
+const CLAVE_LOCALSTORAGE_MOTOR_CACHEADO = "fifo-renta:motor-cacheado";
+
+// Service worker: cachea SOLO los ficheros de Pyodide (URL versionada con
+// "v0.26.4", así que son inmutables — nunca cambia el contenido de esa URL)
+// para que la segunda visita no vuelva a bajar 13-14 MB. El resto de la web
+// (estilo.css, app.js, el motor .py...) sigue yendo a la red normal: no
+// queremos que un service worker deje la web publicada pegada a una versión
+// vieja después de un despliegue nuevo.
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("sw.js").catch((error) => {
+    console.warn("No se ha podido registrar el service worker de caché de Pyodide:", error);
+  });
+}
+
 const CAMPOS_OBLIGATORIOS = ["fecha", "tipo", "valor", "cantidad", "precio"];
 const CAMPOS_OPCIONALES = ["divisa", "comision"];
 const ETIQUETAS_CAMPO = {
@@ -405,9 +432,80 @@ async function iniciar() {
   await cargarTiposBCE();
 }
 
+// Descarga "urls" en paralelo llevando la cuenta real de bytes recibidos
+// frente al Content-Length de cada una, y llama a actualizarPorcentaje con
+// el % agregado. No es una barra decorativa: son los mismos bytes que
+// loadPyodide() necesita, así que al terminar esto ya están en la caché
+// HTTP del navegador (o en la del service worker) y la llamada real a
+// loadPyodide() de más abajo los reaprovecha en vez de volver a bajarlos —
+// por eso conviene hacer esta precarga ANTES, no en paralelo con ella.
+// Los <link rel="preload"> del <head> ya habrán adelantado el arranque de
+// estas descargas antes de que este script llegue a ejecutarse; fetch()
+// aquí se limita a observar (y a terminar de traer) esas mismas descargas.
+async function precargarConProgreso(urls, actualizarPorcentaje) {
+  const totales = new Array(urls.length).fill(0);
+  const recibidos = new Array(urls.length).fill(0);
+
+  function reportarProgreso() {
+    const total = totales.reduce((a, b) => a + b, 0);
+    if (total === 0) return;
+    const hecho = recibidos.reduce((a, b) => a + b, 0);
+    actualizarPorcentaje(Math.min(99, Math.round((hecho / total) * 100)));
+  }
+
+  await Promise.all(urls.map(async (url, indice) => {
+    let respuesta;
+    try {
+      respuesta = await fetch(url);
+    } catch (error) {
+      return;   // sin red hasta este recurso: loadPyodide() hará su propio intento (y dará su propio error) después
+    }
+    if (!respuesta.ok || !respuesta.body) return;
+
+    totales[indice] = Number(respuesta.headers.get("content-length")) || 0;
+    reportarProgreso();
+
+    const lector = respuesta.body.getReader();
+    for (;;) {
+      const { done, value } = await lector.read();
+      if (done) break;
+      recibidos[indice] += value.length;
+      reportarProgreso();
+    }
+  }));
+}
+
+function motorYaCacheadoAntes() {
+  try {
+    return localStorage.getItem(CLAVE_LOCALSTORAGE_MOTOR_CACHEADO) === "1";
+  } catch (error) {
+    return false;
+  }
+}
+
+function recordarMotorCacheado() {
+  try {
+    localStorage.setItem(CLAVE_LOCALSTORAGE_MOTOR_CACHEADO, "1");
+  } catch (error) {
+    // Sin localStorage no podemos recordarlo, pero tampoco es grave: el
+    // peor caso es que el aviso de "primera vez" salga más de una vez.
+  }
+}
+
 async function cargarMotor() {
   try {
+    el("estado-motor-texto").textContent = motorYaCacheadoAntes()
+      ? "Cargando el motor de cálculo…"
+      : "Cargando el motor de cálculo (Python + Pyodide) — solo tarda esto la primera vez; tu navegador lo recuerda para las siguientes visitas.";
+
+    const barra = el("progreso-motor-barra");
+    const urlsPyodide = PYODIDE_ARCHIVOS_GRANDES.map((nombre) => `${PYODIDE_INDEX_URL}${nombre}`);
+    await precargarConProgreso(urlsPyodide, (porcentaje) => {
+      barra.style.width = `${porcentaje}%`;
+    });
+
     pyodide = await loadPyodide();
+    barra.style.width = "100%";
 
     for (const nombre of FICHEROS_MOTOR) {
       if (nombre === "presets_broker.json") continue;   // se trata aparte: puede venir de localStorage
@@ -429,6 +527,7 @@ async function cargarMotor() {
     pyodide.runPython(CODIGO_ORQUESTADOR_MULTIARCHIVO);
     procesarCsvsMulti = pyodide.globals.get("procesar_csvs_multi");
 
+    recordarMotorCacheado();
     el("estado-motor-texto").textContent = "Motor de cálculo listo.";
     ocultar(el("estado-motor"));
     return true;
