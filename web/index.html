@@ -63,14 +63,6 @@
   </div>
 </section>
 
-<div id="estado-motor" class="estado-motor wrap" aria-live="polite">
-  <div class="estado-motor-fila">
-    <span class="spinner" aria-hidden="true"></span>
-    <span id="estado-motor-texto">Cargando el motor de cálculo…</span>
-  </div>
-  <div class="progreso-motor"><div id="progreso-motor-barra" class="progreso-motor-barra"></div></div>
-</div>
-
 <nav class="steps oculto" id="pasos" aria-label="Progreso">
   <div class="wrap">
     <div class="step" id="paso-nav-1" data-paso="1"><i>1</i><span>Extracto</span></div>
@@ -95,6 +87,10 @@
       </div>
       <div id="lista-ficheros" class="oculto" style="margin-top:0.85rem"></div>
       <p id="nota-sin-subida" class="privacy oculto"><b>No se ha subido a ningún sitio.</b> El cálculo ocurre en tu navegador; puedes comprobarlo en la pestaña Red.</p>
+      <div id="estado-motor" aria-live="polite">
+        <p id="estado-motor-texto" class="texto-pequeno">La primera vez tarda unos segundos en preparar el motor de cálculo. Después va instantáneo.</p>
+        <div class="progreso-motor"><div id="progreso-motor-barra" class="progreso-motor-barra"></div></div>
+      </div>
     </div>
 
     <details id="zona-mapeo" class="card oculto">
@@ -138,7 +134,7 @@
         <div class="fila-preset">
           <label for="input-nombre-preset">Guardar este mapeo como preset</label>
           <input type="text" id="input-nombre-preset" placeholder="p. ej. Mi bróker" autocomplete="off">
-          <button id="boton-guardar-preset" type="button" class="boton-secundario">Guardar mapeo</button>
+          <button id="boton-guardar-preset" type="button" class="boton-secundario" disabled>Guardar mapeo</button>
         </div>
 
         <details class="vista-previa">

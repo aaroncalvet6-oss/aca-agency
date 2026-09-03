@@ -30,8 +30,6 @@ const PYODIDE_ARCHIVOS_GRANDES = [
   "pyodide-lock.json",
   "pyodide.asm.js",
 ];
-const CLAVE_LOCALSTORAGE_MOTOR_CACHEADO = "fifo-renta:motor-cacheado";
-
 // Service worker: cachea SOLO los ficheros de Pyodide (URL versionada con
 // "v0.26.4", así que son inmutables — nunca cambia el contenido de esa URL)
 // para que la segunda visita no vuelva a bajar 13-14 MB. El resto de la web
@@ -42,6 +40,137 @@ if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("sw.js").catch((error) => {
     console.warn("No se ha podido registrar el service worker de caché de Pyodide:", error);
   });
+}
+
+// --- Lectura de CSV en JS puro, solo para el paso 1 --------------------
+//
+// El paso 1 (soltar el CSV, ver y completar el mapeo de columnas) NUNCA
+// necesita a Python: leer cabeceras y adivinar qué columna es cada campo
+// es trabajo de texto, no de cálculo fiscal. Portar ESTO a JS (que no es
+// "el motor" — no decide FIFO, tipos de cambio ni la regla de los dos
+// meses) es lo que permite que el paso 1 esté listo al instante, mientras
+// Pyodide sigue cargando de fondo. calcular() (más abajo) sigue pasando
+// SIEMPRE por el motor de verdad en Python para el resultado — esto de
+// aquí es solo para pintar la tabla de mapeo antes de que el motor esté.
+//
+// Copia literal (mismo comportamiento, sin reinterpretar nada) de
+// _normalizar_cabecera / SINONIMOS_CAMPO / sugerir_mapeo / _detectar_separador
+// / detectar_csv de lector_csv.py — si alguna vez se cambia allí, hay que
+// replicar el cambio aquí.
+
+const SINONIMOS_CAMPO = {
+  fecha: [
+    "fecha", "date", "fecha operacion", "fecha ejecucion", "fecha contratacion",
+    "trade date", "value date", "fecha valor", "fecha transaccion",
+  ],
+  tipo: [
+    "tipo", "type", "tipo operacion", "transaction type", "operacion",
+    "accion", "movimiento", "concepto",
+  ],
+  valor: [
+    "isin", "valor", "ticker", "symbol", "security", "nombre",
+    "activo", "instrumento", "producto", "titulo", "security name",
+  ],
+  cantidad: [
+    "cantidad", "quantity", "shares", "acciones", "unidades",
+    "n acciones", "numero acciones", "units", "titulos", "nominal",
+  ],
+  precio: [
+    "precio", "price", "precio unitario", "unit price", "cotizacion",
+    "importe unitario", "share price", "precio accion",
+  ],
+  divisa: ["divisa", "moneda", "currency", "ccy", "divisa operacion"],
+  comision: [
+    "comision", "comisiones", "comision eur", "fee", "fees",
+    "gastos", "coste", "costes", "charges", "commission", "comision operacion",
+  ],
+};
+
+function normalizarCabecera(texto) {
+  texto = texto.replace(/º/g, "").replace(/ª/g, "");
+  texto = texto.normalize("NFKD").replace(/[\u0300-\u036f]/g, "");   // quita acentos (marcas combinantes)
+  texto = texto.trim().toLowerCase();
+  return texto.replace(/[^a-z0-9]+/g, "");
+}
+
+function sugerirMapeoJS(cabeceras) {
+  const normalizadas = new Map(cabeceras.map((c) => [c, normalizarCabecera(c)]));
+  const sugerencia = {};
+  for (const [campo, sinonimos] of Object.entries(SINONIMOS_CAMPO)) {
+    const sinonimosNormalizados = new Set(sinonimos.map(normalizarCabecera));
+    const candidatos = cabeceras.filter((c) => sinonimosNormalizados.has(normalizadas.get(c)));
+    if (candidatos.length === 1) sugerencia[campo] = candidatos[0];
+  }
+  return sugerencia;
+}
+
+// Sniffer minimalista: entre coma/punto y coma/tabulador, elige el que
+// aparece el mismo número de veces en todas las líneas de la muestra (como
+// csv.Sniffer, sin su heurística completa — de sobra para decidir un
+// separador con el que pintar la tabla de mapeo).
+function detectarSeparadorJS(texto) {
+  const muestra = texto.slice(0, 4096);
+  const lineas = muestra.split(/\r\n|\r|\n/).filter((l) => l.length > 0);
+  let mejor = ",";
+  let mejorPuntuacion = -1;
+  for (const delimitador of [",", ";", "\t"]) {
+    const conteos = lineas.map((l) => l.split(delimitador).length - 1);
+    if (conteos.length === 0 || conteos[0] === 0) continue;
+    const consistente = conteos.every((c) => c === conteos[0]);
+    if (consistente && conteos[0] > mejorPuntuacion) {
+      mejor = delimitador;
+      mejorPuntuacion = conteos[0];
+    }
+  }
+  return mejor;
+}
+
+// Parser de CSV con comillas (campos con el separador o saltos de línea
+// dentro, comillas escapadas ""), equivalente al csv.reader de Python.
+function parsearCSV(texto, delimitador) {
+  if (texto.charCodeAt(0) === 0xfeff) texto = texto.slice(1);   // BOM UTF-8
+  const filas = [];
+  let fila = [];
+  let campo = "";
+  let dentroComillas = false;
+  let huboContenido = false;
+
+  for (let i = 0; i < texto.length; i++) {
+    const c = texto[i];
+    if (dentroComillas) {
+      if (c === '"') {
+        if (texto[i + 1] === '"') { campo += '"'; i++; } else { dentroComillas = false; }
+      } else {
+        campo += c;
+      }
+      continue;
+    }
+    if (c === '"') { dentroComillas = true; huboContenido = true; continue; }
+    if (c === delimitador) { fila.push(campo); campo = ""; huboContenido = true; continue; }
+    if (c === "\r") continue;
+    if (c === "\n") {
+      fila.push(campo);
+      filas.push(fila);
+      fila = [];
+      campo = "";
+      huboContenido = false;
+      continue;
+    }
+    campo += c;
+    huboContenido = true;
+  }
+  if (huboContenido || campo.length > 0) { fila.push(campo); filas.push(fila); }
+  return filas;
+}
+
+// Igual que lector_csv.detectar_csv(contenido=...): [cabeceras, filas_muestra, separador].
+function detectarCsvJS(contenido, numFilasMuestra = 5) {
+  const separador = detectarSeparadorJS(contenido);
+  const filas = parsearCSV(contenido, separador);
+  if (filas.length === 0) throw new Error("El fichero está vacío");
+  const cabeceras = filas[0].map((c) => c.trim());
+  const filasMuestra = filas.slice(1, 1 + numFilasMuestra);
+  return [cabeceras, filasMuestra, separador];
 }
 
 const CAMPOS_OBLIGATORIOS = ["fecha", "tipo", "valor", "cantidad", "precio"];
@@ -409,25 +538,59 @@ function actualizarPasos(pasoActivo) {
 
 // --- Arranque -----------------------------------------------------------
 //
-// Dos etapas INDEPENDIENTES, cada una con su propio estado y su propio
-// mensaje de error, para que un fallo nunca se atribuya al componente
-// equivocado:
+// El paso 1 (soltar el CSV, revisar y completar el mapeo de columnas) no
+// depende de Python en absoluto — ver detectarCsvJS/sugerirMapeoJS más
+// arriba — así que se muestra AL INSTANTE, sin esperar a Pyodide. Mientras
+// el usuario suelta el fichero y repasa el mapeo (20-40 s normalmente),
+// cargarMotorEnSegundoPlano() sigue cargando Python de fondo: el usuario
+// nunca mira una pantalla de carga sin poder hacer nada, la espera ocurre
+// mientras trabaja. Si llega a "Calcular" antes de que el motor esté listo
+// (fichero muy simple, mapeo ya recordado), calcular() deja el clic en
+// cola y se ejecuta solo en cuanto el motor termine — ver más abajo.
+//
+// cargarMotor() y cargarTiposBCE() siguen siendo dos etapas independientes,
+// cada una con su propio estado y su propio mensaje de error:
 //   1. cargarMotor(): Pyodide + los .py del motor. Si esto falla, no se
-//      puede hacer nada (ni EUR ni nada), así que sí bloquea el resto.
+//      puede calcular nada (ni EUR ni nada) — se avisa en el propio aviso
+//      pequeño del paso 1.
 //   2. cargarTiposBCE(): el fichero de tipos de cambio. Si esto falla,
 //      el motor sigue funcionando perfectamente para operaciones en EUR
 //      (que no necesitan el BCE); solo las de otras divisas fallarán, y
 //      lo harán con su propio error explicado en el desglose de ese
 //      valor — no aquí arriba, y no como si el motor no hubiera cargado.
 
-async function iniciar() {
-  const motorListo = await cargarMotor();
-  if (!motorListo) return;   // sin Python no hay nada que hacer
+let motorListo = false;
+let calculoPendiente = false;
 
+function iniciar() {
   mostrar(el("zona-carga"));
   actualizarPasos("carga");
   configurarZonaCarga();
   configurarBotones();
+
+  cargarMotorEnSegundoPlano();
+}
+
+async function cargarMotorEnSegundoPlano() {
+  const ok = await cargarMotor();
+  if (!ok) return;   // cargarMotor() ya ha puesto el error en el aviso del paso 1
+
+  motorListo = true;
+  ocultar(el("estado-motor"));
+  pintarSelectorPresets();   // hasta ahora no se podía: necesita lectorCsv (Python)
+  el("boton-guardar-preset").disabled = false;
+  actualizarAvisoComisionDivisa();   // igual: si ya hay un fichero cargado, ahora sí se puede comprobar
+
+  if (calculoPendiente) {
+    calculoPendiente = false;
+    el("boton-calcular").textContent = "Calcular";
+    const mapeo = leerMapeoDelFormulario();
+    if (mapeo) {
+      await calcularConMotor(mapeo, obtenerComisionEnDivisaOperacion());
+    } else {
+      el("boton-calcular").disabled = false;
+    }
+  }
 
   await cargarTiposBCE();
 }
@@ -475,29 +638,8 @@ async function precargarConProgreso(urls, actualizarPorcentaje) {
   }));
 }
 
-function motorYaCacheadoAntes() {
-  try {
-    return localStorage.getItem(CLAVE_LOCALSTORAGE_MOTOR_CACHEADO) === "1";
-  } catch (error) {
-    return false;
-  }
-}
-
-function recordarMotorCacheado() {
-  try {
-    localStorage.setItem(CLAVE_LOCALSTORAGE_MOTOR_CACHEADO, "1");
-  } catch (error) {
-    // Sin localStorage no podemos recordarlo, pero tampoco es grave: el
-    // peor caso es que el aviso de "primera vez" salga más de una vez.
-  }
-}
-
 async function cargarMotor() {
   try {
-    el("estado-motor-texto").textContent = motorYaCacheadoAntes()
-      ? "Cargando el motor de cálculo…"
-      : "Cargando el motor de cálculo (Python + Pyodide) — solo tarda esto la primera vez; tu navegador lo recuerda para las siguientes visitas.";
-
     const barra = el("progreso-motor-barra");
     const urlsPyodide = PYODIDE_ARCHIVOS_GRANDES.map((nombre) => `${PYODIDE_INDEX_URL}${nombre}`);
     await precargarConProgreso(urlsPyodide, (porcentaje) => {
@@ -527,13 +669,9 @@ async function cargarMotor() {
     pyodide.runPython(CODIGO_ORQUESTADOR_MULTIARCHIVO);
     procesarCsvsMulti = pyodide.globals.get("procesar_csvs_multi");
 
-    recordarMotorCacheado();
-    el("estado-motor-texto").textContent = "Motor de cálculo listo.";
-    ocultar(el("estado-motor"));
     return true;
   } catch (error) {
     console.error("Fallo cargando el motor de cálculo (Pyodide/Python):", error);
-    el("estado-motor").querySelector(".spinner")?.remove();
     el("estado-motor-texto").innerHTML =
       "No se ha podido cargar el motor de cálculo (Python). Comprueba tu conexión y recarga la página. " +
       `<br><span class="texto-pequeno">${escaparHtml(error.message || String(error))}</span>`;
@@ -735,17 +873,14 @@ function pintarListaFicheros() {
 
 function detectarYPreparearMapeo() {
   const primerFichero = ficherosActuales[0];
-  let resultado;
+  let cabeceras, filasMuestra;
   try {
-    const resultadoPy = lectorCsv.detectar_csv.callKwargs({ contenido: primerFichero.texto });
-    resultado = resultadoPy.toJs();
-    resultadoPy.destroy();
+    [cabeceras, filasMuestra] = detectarCsvJS(primerFichero.texto);
   } catch (error) {
-    mostrarError(`No se ha podido leer el CSV: ${mensajeDeErrorPython(error)}`);
+    mostrarError(`No se ha podido leer el CSV: ${error.message || error}`);
     return;
   }
 
-  const [cabeceras, filasMuestra] = resultado;
   cabecerasActuales = cabeceras;
 
   pintarTablaMapeo(cabeceras);
@@ -781,10 +916,14 @@ function aplicarAutoDeteccion(cabeceras) {
     avisoAuto.textContent = "Hemos recordado el mapeo que usaste la última vez con estas mismas cabeceras. Puedes cambiar cualquier columna si no es correcto.";
     mostrar(avisoAuto);
   } else {
+    // Los presets guardados viven en Python (lectorCsv): si el motor aún no
+    // ha terminado de cargar, este paso se salta sin más y se pasa directo
+    // al autodetectado por sinónimos (JS, siempre disponible) — nunca se
+    // espera a Pyodide para pintar el mapeo.
     const cabecerasSet = new Set(cabeceras);
-    const presetQueEncaja = obtenerPresets().find((preset) =>
-      Object.values(preset.mapeo).every((columna) => cabecerasSet.has(columna))
-    );
+    const presetQueEncaja = motorListo
+      ? obtenerPresets().find((preset) => Object.values(preset.mapeo).every((columna) => cabecerasSet.has(columna)))
+      : null;
     if (presetQueEncaja) {
       aplicarMapeoAlFormulario(presetQueEncaja.mapeo, presetQueEncaja.comisionEnDivisaOperacion);
       nombrePresetActivo = presetQueEncaja.nombre;
@@ -792,9 +931,7 @@ function aplicarAutoDeteccion(cabeceras) {
       mostrar(avisoPreset);
       setTimeout(() => { el("select-preset").value = presetQueEncaja.nombre; }, 0);
     } else {
-      const sugerenciaPy = lectorCsv.sugerir_mapeo(pyodide.toPy(cabeceras));
-      const sugerencia = sugerenciaPy.toJs({ dict_converter: Object.fromEntries });
-      sugerenciaPy.destroy();
+      const sugerencia = sugerirMapeoJS(cabeceras);
 
       const nDetectados = Object.keys(sugerencia).length;
       if (nDetectados > 0) {
@@ -933,7 +1070,7 @@ function obtenerComisionEnDivisaOperacion() {
 function actualizarAvisoComisionDivisa() {
   const aviso = el("aviso-comision-divisa");
   const valores = valoresDelFormulario();
-  if (!valores.comision || ficherosActuales.length === 0) { ocultar(aviso); return; }
+  if (!motorListo || !valores.comision || ficherosActuales.length === 0) { ocultar(aviso); return; }
 
   const mapeoPy = pyodide.toPy(new Map(Object.entries(valores)));
   let hayRiesgo = false;
@@ -959,6 +1096,7 @@ function actualizarAvisoComisionDivisa() {
 function pintarSelectorPresets() {
   const select = el("select-preset");
   select.innerHTML = '<option value="">— Elegir columnas a mano —</option>';
+  if (!motorListo) return;   // los presets viven en Python; se repinta en cuanto el motor esté listo
 
   for (const preset of obtenerPresets()) {
     const opcion = document.createElement("option");
@@ -1131,14 +1269,29 @@ function configurarBotones() {
 }
 
 // --- Paso 3: calcular y mostrar resultados -------------------------------
+//
+// Si el motor todavía está cargando (poco probable: suele tardar menos que
+// revisar el mapeo, pero un fichero muy simple con el mapeo ya recordado
+// puede llegar aquí antes), el clic se deja en cola: calcularConMotor() se
+// ejecuta solo, automáticamente, en cuanto cargarMotorEnSegundoPlano()
+// termine — el usuario no tiene que volver a pulsar nada.
 
 function calcular() {
   ocultarError();
   const mapeo = leerMapeoDelFormulario();
   if (!mapeo) return;
 
-  const comisionEnDivisaOperacion = obtenerComisionEnDivisaOperacion();
+  if (!motorListo) {
+    calculoPendiente = true;
+    el("boton-calcular").disabled = true;
+    el("boton-calcular").textContent = "Preparando el motor de cálculo…";
+    return;
+  }
 
+  calcularConMotor(mapeo, obtenerComisionEnDivisaOperacion());
+}
+
+function calcularConMotor(mapeo, comisionEnDivisaOperacion) {
   let resultado;
   try {
     const ficherosPy = pyodide.toPy(ficherosActuales.map((f) => [f.nombre, f.texto]));

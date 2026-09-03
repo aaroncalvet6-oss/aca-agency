@@ -179,16 +179,10 @@ nav.herramientas a[aria-current="page"] { color: var(--ink); border-bottom-color
 .hero.simple .wrap { grid-template-columns: 1fr; gap: 0; }
 .hero.simple .sub { max-width: 38rem; }
 
-/* ── estado del motor (antes de que aparezcan los pasos) ── */
-.estado-motor { color: var(--muted); font-size: 0.88rem; padding: 1.1rem 0; }
-.estado-motor-fila { display: flex; align-items: center; gap: 0.6rem; }
-.spinner {
-  width: 14px; height: 14px; border: 2px solid var(--hair); border-top-color: var(--accent);
-  border-radius: 50%; animation: girar 0.8s linear infinite; flex: none;
-}
-@keyframes girar { to { transform: rotate(360deg); } }
-.estado-motor.aviso-error { color: var(--loss); }
-.estado-motor.aviso-error .progreso-motor { display: none; }
+/* ── aviso pequeño de "preparando el motor", dentro del paso 1 ── */
+#estado-motor { margin-top: 0.85rem; }
+#estado-motor.aviso-error #estado-motor-texto { color: var(--loss); }
+#estado-motor.aviso-error .progreso-motor { display: none; }
 
 .progreso-motor { margin-top: 0.65rem; height: 4px; border-radius: 999px; background: var(--hair); overflow: hidden; }
 .progreso-motor-barra {
@@ -302,7 +296,8 @@ select, input[type="text"], input[type="number"], input[type="date"] {
   border-radius: var(--r-md); border: 1px solid var(--accent); background: transparent;
   color: var(--accent); cursor: pointer;
 }
-.boton-secundario:hover { background: var(--accent-s); }
+.boton-secundario:hover:not(:disabled) { background: var(--accent-s); }
+.boton-secundario:disabled { border-color: var(--hair-strong); color: var(--faint); cursor: not-allowed; }
 
 /* ── resultado ── */
 .result { margin-top: 1.6rem; background: var(--surface); box-shadow: var(--sh-2); border: var(--card-border); border-radius: var(--r-lg); overflow: hidden; }
