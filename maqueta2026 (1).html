@@ -1,0 +1,563 @@
+<title>Cálculo FIFO — Maqueta 2026</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600;12..96,700&family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
+
+<style>
+  :root {
+    --f-display: "Bricolage Grotesque", "Instrument Sans", system-ui, sans-serif;
+    --f-sans:    "Instrument Sans", system-ui, -apple-system, sans-serif;
+    --f-mono:    "JetBrains Mono", ui-monospace, Menlo, monospace;
+
+    --ground:   #F7F8FA;
+    --surface:  #FFFFFF;
+    --raised:   #FFFFFF;
+    --sunken:   #EFF1F5;
+    --hair:     #E3E6ED;
+
+    --ink:      #0B0D12;
+    --text:     #2A2F3A;
+    --muted:    #6B7280;
+    --faint:    #9AA1AE;
+
+    --accent:   #2F4BFF;
+    --accent-s: #EDF0FF;
+    --gain:     #0E9F6E;
+    --gain-s:   #E6F7F1;
+    --loss:     #E5484D;
+    --loss-s:   #FDECEC;
+    --warn:     #B45309;
+    --warn-s:   #FEF3E2;
+
+    --sh-1: 0 1px 2px rgba(11,13,18,.05), 0 1px 3px rgba(11,13,18,.04);
+    --sh-2: 0 2px 4px rgba(11,13,18,.04), 0 8px 24px rgba(11,13,18,.07);
+
+    --r-lg: 16px;
+    --r-md: 11px;
+    --r-sm: 8px;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:   #090B10;
+      --surface:  #12151D;
+      --raised:   #171B25;
+      --sunken:   #0E1119;
+      --hair:     #242936;
+
+      --ink:      #F4F6FA;
+      --text:     #C9D0DC;
+      --muted:    #8A93A3;
+      --faint:    #636C7C;
+
+      --accent:   #8296FF;
+      --accent-s: #1A2040;
+      --gain:     #3DD9A0;
+      --gain-s:   #0F2A22;
+      --loss:     #FF7075;
+      --loss-s:   #2E1618;
+      --warn:     #E0A44E;
+      --warn-s:   #2A1F10;
+
+      --sh-1: 0 1px 2px rgba(0,0,0,.4);
+      --sh-2: 0 2px 6px rgba(0,0,0,.35), 0 12px 32px rgba(0,0,0,.45);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground:   #090B10;
+    --surface:  #12151D;
+    --raised:   #171B25;
+    --sunken:   #0E1119;
+    --hair:     #242936;
+
+    --ink:      #F4F6FA;
+    --text:     #C9D0DC;
+    --muted:    #8A93A3;
+    --faint:    #636C7C;
+
+    --accent:   #8296FF;
+    --accent-s: #1A2040;
+    --gain:     #3DD9A0;
+    --gain-s:   #0F2A22;
+    --loss:     #FF7075;
+    --loss-s:   #2E1618;
+    --warn:     #E0A44E;
+    --warn-s:   #2A1F10;
+
+    --sh-1: 0 1px 2px rgba(0,0,0,.4);
+    --sh-2: 0 2px 6px rgba(0,0,0,.35), 0 12px 32px rgba(0,0,0,.45);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--ground);
+    color: var(--text);
+    font-family: var(--f-sans);
+    font-size: 15.5px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page { max-width: 1000px; margin: 0 auto; padding: 0 1.25rem 6rem; }
+
+  /* ---------- nav ---------- */
+
+  nav {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 1.1rem 0 1.6rem;
+  }
+
+  .brand {
+    display: flex; align-items: center; gap: 0.6rem;
+    font-family: var(--f-display);
+    font-weight: 700;
+    font-size: 1.05rem;
+    letter-spacing: -0.02em;
+    color: var(--ink);
+  }
+  .mark {
+    width: 26px; height: 26px;
+    border-radius: 7px;
+    background: var(--accent);
+    display: grid; place-items: center;
+    color: #fff;
+    font-family: var(--f-mono);
+    font-size: 0.62rem;
+    font-weight: 600;
+    letter-spacing: -0.04em;
+  }
+
+  .navlinks { display: flex; gap: 0.35rem; }
+  .navlinks a {
+    font-size: 0.86rem;
+    color: var(--muted);
+    text-decoration: none;
+    padding: 0.4rem 0.7rem;
+    border-radius: var(--r-sm);
+  }
+  .navlinks a:hover { background: var(--sunken); color: var(--ink); }
+
+  /* ---------- hero / dropzone ---------- */
+
+  .hero { margin-bottom: 1.5rem; }
+
+  h1 {
+    font-family: var(--f-display);
+    font-size: clamp(2.1rem, 5vw, 3.1rem);
+    line-height: 1.03;
+    letter-spacing: -0.038em;
+    font-weight: 600;
+    color: var(--ink);
+    margin: 0 0 0.7rem;
+    text-wrap: balance;
+    max-width: 17ch;
+  }
+  h1 em { font-style: normal; color: var(--accent); }
+
+  .lede {
+    font-size: 1.03rem;
+    color: var(--muted);
+    max-width: 54ch;
+    margin: 0 0 1.6rem;
+  }
+
+  .loaded {
+    background: var(--surface);
+    border-radius: var(--r-lg);
+    box-shadow: var(--sh-1);
+    padding: 0.9rem 1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.85rem;
+    flex-wrap: wrap;
+  }
+  .filechip {
+    display: flex; align-items: center; gap: 0.55rem;
+    background: var(--sunken);
+    border-radius: var(--r-md);
+    padding: 0.5rem 0.75rem;
+    font-family: var(--f-mono);
+    font-size: 0.8rem;
+    color: var(--ink);
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--gain); flex: none; }
+  .loaded .meta { font-size: 0.85rem; color: var(--muted); }
+  .loaded .spacer { flex: 1; }
+  .ghost {
+    font-size: 0.83rem; color: var(--accent);
+    background: none; border: 0; cursor: pointer;
+    font-family: var(--f-sans); font-weight: 500;
+    padding: 0.4rem 0.6rem; border-radius: var(--r-sm);
+  }
+  .ghost:hover { background: var(--accent-s); }
+
+  /* ---------- pills de año ---------- */
+
+  .years {
+    display: flex; gap: 0.4rem; flex-wrap: wrap;
+    margin: 1.9rem 0 0.9rem;
+  }
+  .pill {
+    font-family: var(--f-mono);
+    font-size: 0.82rem;
+    font-weight: 500;
+    padding: 0.42rem 0.85rem;
+    border-radius: 999px;
+    background: var(--surface);
+    color: var(--muted);
+    box-shadow: var(--sh-1);
+    cursor: pointer;
+    border: 0;
+  }
+  .pill[aria-pressed="true"] {
+    background: var(--ink);
+    color: var(--ground);
+    box-shadow: none;
+  }
+
+  /* ---------- tarjeta de resultado ---------- */
+
+  .result {
+    background: var(--surface);
+    border-radius: var(--r-lg);
+    box-shadow: var(--sh-2);
+    overflow: hidden;
+  }
+
+  .result .head {
+    padding: 1.9rem 1.9rem 1.7rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.6rem;
+    align-items: flex-end;
+    justify-content: space-between;
+    border-bottom: 1px solid var(--hair);
+  }
+
+  .kicker {
+    font-family: var(--f-mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--muted);
+    display: flex; align-items: center; gap: 0.5rem;
+  }
+  .tag {
+    font-family: var(--f-mono);
+    font-size: 0.64rem;
+    letter-spacing: 0.06em;
+    padding: 0.18rem 0.45rem;
+    border-radius: 5px;
+    background: var(--gain-s);
+    color: var(--gain);
+    text-transform: none;
+  }
+
+  .big {
+    font-family: var(--f-sans);
+    font-size: clamp(2.9rem, 8vw, 4.3rem);
+    font-weight: 600;
+    line-height: 0.98;
+    letter-spacing: -0.045em;
+    color: var(--ink);
+    font-variant-numeric: tabular-nums;
+    margin: 0.55rem 0 0;
+  }
+  .big.neg { color: var(--loss); }
+
+  .headnote {
+    font-size: 0.88rem;
+    color: var(--muted);
+    max-width: 30ch;
+    margin: 0;
+  }
+
+  /* ---------- dos columnas resumen ---------- */
+
+  .grid2 {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  }
+  .col { padding: 1.4rem 1.9rem 1.6rem; }
+  .col + .col { border-left: 1px solid var(--hair); }
+
+  .col h3 {
+    font-family: var(--f-mono);
+    font-size: 0.67rem;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 500;
+    margin: 0 0 0.9rem;
+  }
+
+  .row {
+    display: flex; justify-content: space-between; gap: 1rem;
+    padding: 0.42rem 0;
+    font-size: 0.93rem;
+  }
+  .row .v {
+    font-family: var(--f-mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--ink);
+    font-size: 0.9rem;
+  }
+  .row.total { border-top: 1px solid var(--hair); margin-top: 0.45rem; padding-top: 0.65rem; font-weight: 600; }
+  .row.total .v { font-weight: 600; }
+  .row .k { color: var(--muted); }
+  .row.blocked .v { color: var(--warn); }
+  .row.blocked .k { color: var(--warn); }
+
+  /* ---------- desglose ---------- */
+
+  .panel {
+    background: var(--surface);
+    border-radius: var(--r-lg);
+    box-shadow: var(--sh-1);
+    margin-top: 1rem;
+    overflow: hidden;
+  }
+  .panel > header {
+    padding: 1.2rem 1.5rem 0.9rem;
+    display: flex; align-items: baseline; gap: 0.7rem; flex-wrap: wrap;
+  }
+  .panel h2 {
+    font-family: var(--f-display);
+    font-size: 1.02rem;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    color: var(--ink);
+    margin: 0;
+  }
+  .isin {
+    font-family: var(--f-mono);
+    font-size: 0.76rem;
+    color: var(--muted);
+    background: var(--sunken);
+    padding: 0.15rem 0.45rem;
+    border-radius: 5px;
+  }
+
+  .scroll { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; min-width: 560px; }
+  th, td { padding: 0.66rem 1.5rem; text-align: right; }
+  th:first-child, td:first-child { text-align: left; }
+  thead th {
+    font-family: var(--f-mono);
+    font-size: 0.63rem;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: var(--faint);
+    font-weight: 500;
+    padding-bottom: 0.5rem;
+  }
+  tbody td {
+    font-family: var(--f-mono);
+    font-size: 0.86rem;
+    font-variant-numeric: tabular-nums;
+    color: var(--ink);
+    border-top: 1px solid var(--hair);
+  }
+  tbody tr:hover td { background: var(--sunken); }
+  td.g { color: var(--gain); }
+  td.r { color: var(--loss); }
+  td.w { color: var(--warn); }
+  tfoot td {
+    font-family: var(--f-mono);
+    font-size: 0.86rem;
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    color: var(--ink);
+    border-top: 1px solid var(--hair);
+    background: var(--sunken);
+  }
+
+  .panel .foot {
+    padding: 1rem 1.5rem 1.3rem;
+    font-size: 0.86rem;
+    color: var(--muted);
+  }
+  .lots { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.7rem; }
+  .lot {
+    font-family: var(--f-mono);
+    font-size: 0.76rem;
+    background: var(--sunken);
+    border-radius: var(--r-sm);
+    padding: 0.3rem 0.6rem;
+    color: var(--text);
+  }
+
+  /* ---------- nota declaración ---------- */
+
+  .note {
+    margin-top: 1rem;
+    background: var(--accent-s);
+    border-radius: var(--r-lg);
+    padding: 1.3rem 1.5rem 1.4rem;
+  }
+  .note h3 {
+    font-family: var(--f-display);
+    font-size: 0.98rem; font-weight: 600;
+    color: var(--ink); margin: 0 0 0.55rem;
+    letter-spacing: -0.01em;
+  }
+  .note p { margin: 0 0 0.45rem; font-size: 0.92rem; color: var(--text); max-width: 68ch; }
+  .note p:last-child { margin: 0.7rem 0 0; font-size: 0.83rem; color: var(--muted); }
+  .note b { color: var(--ink); font-weight: 600; }
+
+  /* ---------- pie ---------- */
+
+  footer {
+    margin-top: 3rem;
+    padding-top: 1.3rem;
+    border-top: 1px solid var(--hair);
+    display: flex; flex-wrap: wrap; gap: 0.4rem 1.2rem;
+    align-items: center;
+    font-size: 0.83rem;
+    color: var(--faint);
+  }
+  footer a { color: var(--muted); text-decoration: none; }
+  footer a:hover { color: var(--accent); }
+  footer .sep { flex: 1; }
+
+  button:focus-visible, a:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  @media (max-width: 640px) {
+    .col + .col { border-left: 0; border-top: 1px solid var(--hair); }
+    .result .head { padding: 1.5rem 1.25rem 1.4rem; }
+    .col { padding: 1.2rem 1.25rem 1.3rem; }
+    th, td { padding-left: 1.25rem; padding-right: 1.25rem; }
+  }
+</style>
+
+<div class="page">
+
+  <nav>
+    <div class="brand"><span class="mark">FI</span> cálculofifo</div>
+    <div class="navlinks">
+      <a href="#">Conversor BCE</a>
+      <a href="#">Regla 2 meses</a>
+      <a href="#">Cómo funciona</a>
+    </div>
+  </nav>
+
+  <div class="hero">
+    <h1>Tu bróker no calcula <em>lo que Hacienda te pide</em>.</h1>
+    <p class="lede">Sube el CSV de tu bróker extranjero y saca las cifras exactas de tu declaración: FIFO por valor, tipos oficiales del BCE por fecha y regla de los dos meses. Gratis, y sin que el fichero salga de tu navegador.</p>
+
+    <div class="loaded">
+      <span class="filechip"><span class="dot"></span> transacciones_2024.csv</span>
+      <span class="meta">11 operaciones · 3 valores · 7 de 7 columnas detectadas</span>
+      <span class="spacer"></span>
+      <button class="ghost">Cambiar mapeo</button>
+      <button class="ghost">Subir otro</button>
+    </div>
+  </div>
+
+  <div class="years">
+    <button class="pill">2023</button>
+    <button class="pill" aria-pressed="true">2024</button>
+    <button class="pill">2025</button>
+  </div>
+
+  <div class="result">
+    <div class="head">
+      <div>
+        <div class="kicker">Ganancia patrimonial <span class="tag">ejercicio 2024</span></div>
+        <div class="big">235,00 €</div>
+      </div>
+      <p class="headnote">Suma del FIFO de los tres valores, con la regla de los dos meses ya aplicada.</p>
+    </div>
+
+    <div class="grid2">
+      <div class="col">
+        <h3>Ganancias patrimoniales</h3>
+        <div class="row"><span class="k">Bruto de las ventas</span><span class="v">199,00 €</span></div>
+        <div class="row blocked"><span class="k">Pérdida bloqueada por recompra</span><span class="v">+36,00 €</span></div>
+        <div class="row total"><span class="k">Declarable</span><span class="v">235,00 €</span></div>
+      </div>
+      <div class="col">
+        <h3>Dividendos</h3>
+        <div class="row"><span class="k">Bruto percibido</span><span class="v">8,00 €</span></div>
+        <div class="row"><span class="k">Retención en origen</span><span class="v">0,00 €</span></div>
+        <div class="row total"><span class="k">A declarar</span><span class="v">8,00 €</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <header>
+      <h2>iShares Core MSCI World</h2>
+      <span class="isin">IE00B4L5Y983</span>
+    </header>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Fecha de venta</th>
+            <th>Participaciones</th>
+            <th>Bruto</th>
+            <th>Bloqueado</th>
+            <th>Declarado</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>12/04/2024</td>
+            <td>15,00</td>
+            <td class="g">172,00 €</td>
+            <td>0,00 €</td>
+            <td class="g">172,00 €</td>
+          </tr>
+          <tr>
+            <td>20/06/2024</td>
+            <td>5,00</td>
+            <td class="r">−60,00 €</td>
+            <td class="w">36,00 €</td>
+            <td class="r">−24,00 €</td>
+          </tr>
+        </tbody>
+        <tfoot>
+          <tr>
+            <td>Total</td>
+            <td>20,00</td>
+            <td>112,00 €</td>
+            <td>36,00 €</td>
+            <td>148,00 €</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+    <div class="foot">
+      Siguen sin vender al cierre de 2024. Su coste, ya ajustado por la regla de los dos meses, es el que contará cuando las vendas:
+      <div class="lots">
+        <span class="lot">3,00 · compradas el 25/07/2024</span>
+        <span class="lot">5,00 · compradas el 05/12/2024</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="note">
+    <h3>Dónde va esto en tu declaración de 2024</h3>
+    <p><b>235,00 €</b> van en ganancias y pérdidas patrimoniales derivadas de transmisiones, dentro de la base imponible del ahorro.</p>
+    <p><b>8,00 €</b> de dividendos van en un apartado distinto: rendimientos del capital mobiliario.</p>
+    <p>Los números de casilla cambian cada campaña. Compruébalos en el borrador de Renta Web o con tu gestoría antes de presentar.</p>
+  </div>
+
+  <footer>
+    <span>Herramienta de cálculo. No es asesoramiento fiscal.</span>
+    <span class="sep"></span>
+    <a href="#">Aviso legal</a>
+    <a href="#">Privacidad</a>
+    <a href="#">Tipos BCE al 02/09/2026</a>
+  </footer>
+
+</div>
