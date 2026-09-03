@@ -349,6 +349,15 @@ function formatoCantidad(cadena) {
   return `${negativo ? SIGNO_MENOS : ""}${enteroConMiles},${decimales}`;
 }
 
+// Clase de color de una cifra según su signo: verde en ganancias, rojo en
+// pérdidas (columnas Bruto y Declarado de la tabla de ventas).
+function claseSigno(cadena) {
+  const valor = parseFloat(cadena);
+  if (valor > 0) return "g";
+  if (valor < 0) return "r";
+  return "";
+}
+
 // --- Progreso de los 3 pasos ---------------------------------------------
 
 const ORDEN_PASO = { carga: 1, mapeo: 2, resultado: 3 };
@@ -1202,7 +1211,7 @@ function pintarResultadoCard(resultado) {
   const hayBloqueado = parseFloat(bloqueado) !== 0;
   const filaBloqueado = hayBloqueado
     ? `
-      <div class="kv"><span class="k">Bloqueado por recompra</span><span class="v">+${formatoDinero(bloqueado)}</span></div>
+      <div class="kv bloqueado"><span class="k">Bloqueado por recompra</span><span class="v">+${formatoDinero(bloqueado)}</span></div>
       <p class="nota-bloqueo">Pérdida bloqueada por la regla de los 2 meses (art. 33.5.f LIRPF): no computa en este ejercicio, se traslada al coste del lote recomprado.</p>
     `
     : `<div class="kv"><span class="k">Bloqueado por recompra</span><span class="v">${formatoDinero(bloqueado)}</span></div>`;
@@ -1249,9 +1258,9 @@ function htmlSeccionValor(valor, datos) {
     <tr>
       <td>${op.fecha}</td>
       <td>${formatoCantidad(op.participaciones)}</td>
-      <td>${formatoDinero(op.resultado_bruto)}</td>
-      <td>${formatoDinero(op.bloqueado)}</td>
-      <td>${formatoDinero(op.resultado_declarado)}</td>
+      <td class="${claseSigno(op.resultado_bruto)}">${formatoDinero(op.resultado_bruto)}</td>
+      <td class="${parseFloat(op.bloqueado) !== 0 ? "w" : ""}">${formatoDinero(op.bloqueado)}</td>
+      <td class="${claseSigno(op.resultado_declarado)}">${formatoDinero(op.resultado_declarado)}</td>
     </tr>
   `).join("");
 
