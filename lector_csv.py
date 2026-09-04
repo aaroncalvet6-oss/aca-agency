@@ -37,7 +37,7 @@ from decimal import Decimal
 CAMPOS_OBLIGATORIOS = ("fecha", "tipo", "valor", "cantidad", "precio")
 CAMPOS_OPCIONALES = ("divisa", "comision")
 
-FORMATOS_FECHA = ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y", "%d.%m.%Y")
+FORMATOS_FECHA = ("%d/%m/%Y", "%Y-%m-%d", "%Y/%m/%d", "%d-%m-%Y", "%d.%m.%Y")
 
 RUTA_PRESETS_POR_DEFECTO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "presets_broker.json")
 
@@ -162,8 +162,19 @@ def detectar_csv(ruta_csv=None, num_filas_muestra=5, encoding="utf-8-sig", conte
     return cabeceras, filas_muestra, separador
 
 
+# Si la fecha trae hora pegada (ISO 8601 con "T", o "AAAA-MM-DD HH:MM:SS"),
+# nos quedamos solo con la parte de fecha antes de probar FORMATOS_FECHA:
+# para el FIFO y para el tipo de cambio del BCE solo cuenta el DIA de la
+# operacion, nunca la hora ni la zona horaria ("2024-01-15T09:31:22Z",
+# "2024-01-15T09:31:22+02:00", "2024-01-15 09:31:22" -> "2024-01-15").
+_RE_FECHA_CON_HORA = re.compile(r"^(\d{4}-\d{2}-\d{2}|\d{2}[/.-]\d{2}[/.-]\d{4})[T ]")
+
+
 def _parsear_fecha(texto):
     texto = texto.strip()
+    coincide = _RE_FECHA_CON_HORA.match(texto)
+    if coincide:
+        texto = coincide.group(1)
     for formato in FORMATOS_FECHA:
         try:
             return datetime.strptime(texto, formato).date()
@@ -223,7 +234,8 @@ def _clasificar_tipo(valor_bruto, tipos):
 def leer_operaciones(ruta_csv=None, mapeo=None, tipos=None, preset=None,
                       ruta_presets=RUTA_PRESETS_POR_DEFECTO, separador=None,
                       encoding="utf-8-sig", contenido=None,
-                      comision_en_divisa_operacion=False):
+                      comision_en_divisa_operacion=False,
+                      cantidad_valor_absoluto=False):
     """Lee un CSV de operaciones y lo convierte al modelo de calculadora.py.
 
     Acepta una ruta de fichero (ruta_csv) o el texto ya en memoria
@@ -247,6 +259,13 @@ def leer_operaciones(ruta_csv=None, mapeo=None, tipos=None, preset=None,
         convierte a euros con el mismo tipo de cambio y la misma fecha que
         el importe principal (ver calculadora.a_euros). No afecta a la
         retencion de los dividendos, que siempre se trata en EUR.
+    cantidad_valor_absoluto: algunos brokers exportan las ventas con la
+        cantidad en negativo (p.ej. "-8"). calculadora.py exige que
+        "acciones" sea siempre positivo — el signo NUNCA decide si es
+        compra o venta, eso lo dice solo la columna "tipo" (y su mapeo de
+        valores, ver sugerir_mapeo/tipos mas arriba). Si esto es True, una
+        cantidad negativa se guarda en positivo (abs); si es False (por
+        defecto) se guarda tal cual viene en el fichero.
 
     Devuelve (operaciones_por_valor, dividendos_por_valor, avisos):
       operaciones_por_valor: {valor_o_isin: [operacion, ...]}, cada lista ya
@@ -266,7 +285,7 @@ def leer_operaciones(ruta_csv=None, mapeo=None, tipos=None, preset=None,
         ni en dividendos_por_valor.
     """
     if preset is not None:
-        mapeo, tipos, comision_en_divisa_operacion = cargar_preset(preset, ruta_presets)
+        mapeo, tipos, comision_en_divisa_operacion, cantidad_valor_absoluto = cargar_preset(preset, ruta_presets)
 
     if not mapeo:
         raise ErrorLectorCSV("Hace falta un 'mapeo' (o un 'preset' ya guardado)")
@@ -338,6 +357,9 @@ def leer_operaciones(ruta_csv=None, mapeo=None, tipos=None, preset=None,
         if cantidad is None or precio is None:
             avisos.append(f"Fila {num_fila}: falta cantidad o precio, se ignora")
             continue
+
+        if cantidad_valor_absoluto and cantidad.startswith("-"):
+            cantidad = cantidad[1:]
 
         valor = fila[mapeo["valor"]].strip()
 
@@ -433,12 +455,13 @@ def resumir_dividendos(dividendos_por_valor):
 
 
 def guardar_preset(nombre, mapeo, tipos=None, comision_en_divisa_operacion=False,
-                    ruta_presets=RUTA_PRESETS_POR_DEFECTO):
+                    cantidad_valor_absoluto=False, ruta_presets=RUTA_PRESETS_POR_DEFECTO):
     presets = _cargar_todos_los_presets(ruta_presets)
     presets[nombre] = {
         "mapeo": mapeo,
         "tipos": tipos or TIPOS_POR_DEFECTO,
         "comision_en_divisa_operacion": bool(comision_en_divisa_operacion),
+        "cantidad_valor_absoluto": bool(cantidad_valor_absoluto),
     }
     os.makedirs(os.path.dirname(ruta_presets) or ".", exist_ok=True)
     with open(ruta_presets, "w", encoding="utf-8") as f:
@@ -455,6 +478,7 @@ def cargar_preset(nombre, ruta_presets=RUTA_PRESETS_POR_DEFECTO):
         preset["mapeo"],
         preset.get("tipos", TIPOS_POR_DEFECTO),
         preset.get("comision_en_divisa_operacion", False),
+        preset.get("cantidad_valor_absoluto", False),
     )
 
 

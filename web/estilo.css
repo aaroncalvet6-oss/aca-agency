@@ -298,6 +298,10 @@ select, input[type="text"], input[type="number"], input[type="date"] {
 }
 .boton-secundario:hover:not(:disabled) { background: var(--accent-s); }
 .boton-secundario:disabled { border-color: var(--hair-strong); color: var(--faint); cursor: not-allowed; }
+.boton-secundario.activo { background: var(--accent); border-color: var(--accent); color: #FFF; }
+
+/* ── mapeo de valores de la columna "tipo" ── */
+#valores-tipo .lbl { margin-bottom: 0.6rem; display: block; }
 
 /* ── resultado ── */
 .result { margin-top: 1.6rem; background: var(--surface); box-shadow: var(--sh-2); border: var(--card-border); border-radius: var(--r-lg); overflow: hidden; }

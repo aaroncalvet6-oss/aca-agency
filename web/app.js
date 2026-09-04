@@ -173,6 +173,100 @@ function detectarCsvJS(contenido, numFilasMuestra = 5) {
   return [cabeceras, filasMuestra, separador];
 }
 
+// --- Mapeo de VALORES de la columna "tipo" (compra/venta/dividendo/ignorar) ---
+//
+// Cada bróker usa sus propias palabras ("Buy"/"Sell", "Kauf"/"Verkauf",
+// "Purchase"...): TIPOS_POR_DEFECTO de lector_csv.py ya reconoce unas
+// pocas en español/inglés, pero no todas, y aquí no se puede "adivinar y
+// listo" — si el usuario no confirma qué es cada valor, la fila se ignora
+// silenciosamente sin que se note por qué. Por eso, una vez elegida la
+// columna de tipo, se enseñan TODOS los valores distintos que trae el
+// fichero para esa columna y el usuario dice qué es cada uno; el mapeo
+// resultante ({valor: categoria}) se invierte a la forma que espera
+// lector_csv.py ({categoria: [valores]}) justo antes de calcular — ver
+// tiposValoresACategoria más abajo. Autodetectar solo evita repetir
+// trabajo obvio: el usuario puede corregir cualquier valor siempre, y
+// mientras quede alguno sin decidir no se puede calcular (nunca se
+// inventa una clasificación).
+const SINONIMOS_VALOR_TIPO = {
+  compra: ["compra", "buy", "purchase", "kauf", "acquisto", "achat"],
+  venta: ["venta", "sell", "sale", "verkauf", "vendita", "vente"],
+  dividendo: ["dividendo", "dividend", "dividende"],
+  ignorar: [
+    "traspaso", "transfer", "übertrag", "ubertrag",
+    "interes", "interés", "interest", "zinsen",
+    "abono", "retencion", "retención",
+    "comision", "comisiones", "fee", "fees", "gebühr", "gebuhr",
+    "saveback", "round up", "roundup", "redondeo",
+    "cancelado", "cancelada", "cancelled", "canceled", "storniert", "storno",
+  ],
+};
+
+function autoclasificarValorTipo(valor) {
+  const normalizado = valor.trim().toLowerCase();
+  for (const [categoria, sinonimos] of Object.entries(SINONIMOS_VALOR_TIPO)) {
+    if (sinonimos.includes(normalizado)) return categoria;
+  }
+  return "";
+}
+
+// {categoria: [valores]} (lo que espera lector_csv.py) <-> {valor: categoria} (lo que maneja la UI).
+function tiposCategoriaAValores(tipos) {
+  const resultado = {};
+  for (const [categoria, valores] of Object.entries(tipos || {})) {
+    for (const valor of valores) resultado[valor] = categoria;
+  }
+  return resultado;
+}
+
+function tiposValoresACategoria(mapeoValores) {
+  const resultado = { compra: [], venta: [], dividendo: [], ignorar: [] };
+  for (const [valor, categoria] of Object.entries(mapeoValores)) {
+    if (categoria && resultado[categoria]) resultado[categoria].push(valor);
+  }
+  return resultado;
+}
+
+// Todas las filas de datos (sin cabecera) de un fichero ya cargado, para
+// poder inspeccionar una columna entera y no solo las 5 filas de muestra.
+function todasLasFilasDe(fichero) {
+  const separador = detectarSeparadorJS(fichero.texto);
+  const filas = parsearCSV(fichero.texto, separador);
+  if (filas.length === 0) return { cabeceras: [], filas: [] };
+  return { cabeceras: filas[0].map((c) => c.trim()), filas: filas.slice(1) };
+}
+
+// Valores distintos (no vacíos, en orden de primera aparición) que trae
+// "columna" en TODOS los ficheros cargados — no solo en la muestra.
+function valoresDistintosDeColumna(columna) {
+  const vistos = new Set();
+  for (const fichero of ficherosActuales) {
+    const { cabeceras, filas } = todasLasFilasDe(fichero);
+    const indice = cabeceras.indexOf(columna);
+    if (indice === -1) continue;
+    for (const fila of filas) {
+      const valor = (fila[indice] || "").trim();
+      if (valor) vistos.add(valor);
+    }
+  }
+  return [...vistos];
+}
+
+// Cantidades en negativo en "columna", en cualquiera de los ficheros
+// cargados (ver el aviso de "¿esto significa venta?" más abajo).
+function hayCantidadesNegativas(columna) {
+  for (const fichero of ficherosActuales) {
+    const { cabeceras, filas } = todasLasFilasDe(fichero);
+    const indice = cabeceras.indexOf(columna);
+    if (indice === -1) continue;
+    for (const fila of filas) {
+      const valor = (fila[indice] || "").trim();
+      if (valor.startsWith("-") && /[0-9]/.test(valor)) return true;
+    }
+  }
+  return false;
+}
+
 const CAMPOS_OBLIGATORIOS = ["fecha", "tipo", "valor", "cantidad", "precio"];
 const CAMPOS_OPCIONALES = ["divisa", "comision"];
 const ETIQUETAS_CAMPO = {
@@ -290,7 +384,7 @@ def _resumen_dividendos_anio(dividendos_por_valor, anio):
     }
 
 
-def procesar_csvs_multi(ficheros, mapeo, tipos=None, comision_en_divisa_operacion=False):
+def procesar_csvs_multi(ficheros, mapeo, tipos=None, comision_en_divisa_operacion=False, cantidad_valor_absoluto=False):
     resultado = {
         "frescura_bce": motor_web.info_frescura_bce(),
         "error_lectura": None,
@@ -314,6 +408,7 @@ def procesar_csvs_multi(ficheros, mapeo, tipos=None, comision_en_divisa_operacio
             ops, divs, avisos = lector_csv.leer_operaciones(
                 contenido=contenido, mapeo=mapeo, tipos=tipos,
                 comision_en_divisa_operacion=comision_en_divisa_operacion,
+                cantidad_valor_absoluto=cantidad_valor_absoluto,
             )
         except lector_csv.ErrorLectorCSV as error:
             mensaje = f"{nombre}: {error}" if varios else str(error)
@@ -468,6 +563,8 @@ let cabecerasActuales = [];
 let ultimoResultado = null;
 let anioSeleccionado = null;   // ejercicio fiscal que se está mostrando ahora mismo
 let nombrePresetActivo = null;   // null = mapeo a mano, sin preset asociado
+let mapeoValoresTipo = {};   // {valor_del_csv: "compra"|"venta"|"dividendo"|"ignorar"}
+let respuestaCantidadNegativa = null;   // null = sin responder; true = son ventas (usar abs); false = dejar tal cual
 
 const el = (id) => document.getElementById(id);
 
@@ -579,7 +676,10 @@ async function cargarMotorEnSegundoPlano() {
   ocultar(el("estado-motor"));
   pintarSelectorPresets();   // hasta ahora no se podía: necesita lectorCsv (Python)
   el("boton-guardar-preset").disabled = false;
-  actualizarAvisoComisionDivisa();   // igual: si ya hay un fichero cargado, ahora sí se puede comprobar
+  // Si ya hay un fichero cargado (la tabla de mapeo existe), ahora sí se
+  // puede comprobar el aviso de comisión en otra divisa; si todavía no se
+  // ha soltado ningún CSV, no hay nada que comprobar (ni selects que leer).
+  if (ficherosActuales.length > 0) actualizarAvisoComisionDivisa();
 
   if (calculoPendiente) {
     calculoPendiente = false;
@@ -746,9 +846,16 @@ function claveMapeoLocal(cabeceras) {
   return PREFIJO_LOCALSTORAGE_MAPEO + huella;
 }
 
-function recordarMapeoLocal(cabeceras, mapeo, comisionEnDivisaOperacion) {
+function recordarMapeoLocal(cabeceras, mapeo, comisionEnDivisaOperacion, mapeoValoresTipoActual, respuestaCantidadNegativaActual) {
   try {
-    localStorage.setItem(claveMapeoLocal(cabeceras), JSON.stringify({ mapeo, comisionEnDivisaOperacion }));
+    localStorage.setItem(
+      claveMapeoLocal(cabeceras),
+      JSON.stringify({
+        mapeo, comisionEnDivisaOperacion,
+        mapeoValoresTipo: mapeoValoresTipoActual,
+        respuestaCantidadNegativa: respuestaCantidadNegativaActual,
+      })
+    );
   } catch (error) {
     console.warn("No se ha podido recordar el mapeo en este navegador:", error);
   }
@@ -872,6 +979,13 @@ function pintarListaFicheros() {
 // --- Paso 2: detectar cabeceras y mapear columnas -------------------------
 
 function detectarYPreparearMapeo() {
+  // Cada vez que se (re)detecta el fichero se parte de cero: el mapeo de
+  // valores de tipo y la respuesta sobre cantidades negativas se
+  // reconstruyen a partir de lo recordado/preset/autodetectado, nunca se
+  // arrastran de un fichero anterior con otras columnas.
+  mapeoValoresTipo = {};
+  respuestaCantidadNegativa = null;
+
   const primerFichero = ficherosActuales[0];
   let cabeceras, filasMuestra;
   try {
@@ -913,6 +1027,8 @@ function aplicarAutoDeteccion(cabeceras) {
   const recordado = mapeoRecordadoLocal(cabeceras);
   if (recordado) {
     aplicarMapeoAlFormulario(recordado.mapeo, recordado.comisionEnDivisaOperacion);
+    mapeoValoresTipo = recordado.mapeoValoresTipo || {};
+    respuestaCantidadNegativa = recordado.respuestaCantidadNegativa ?? null;
     avisoAuto.textContent = "Hemos recordado el mapeo que usaste la última vez con estas mismas cabeceras. Puedes cambiar cualquier columna si no es correcto.";
     mostrar(avisoAuto);
   } else {
@@ -926,6 +1042,8 @@ function aplicarAutoDeteccion(cabeceras) {
       : null;
     if (presetQueEncaja) {
       aplicarMapeoAlFormulario(presetQueEncaja.mapeo, presetQueEncaja.comisionEnDivisaOperacion);
+      mapeoValoresTipo = tiposCategoriaAValores(presetQueEncaja.tipos);
+      respuestaCantidadNegativa = presetQueEncaja.cantidadValorAbsoluto;
       nombrePresetActivo = presetQueEncaja.nombre;
       avisoPreset.textContent = `Este fichero encaja con el preset "${presetQueEncaja.nombre}": lo hemos preseleccionado. Puedes cambiar cualquier columna si no es correcto.`;
       mostrar(avisoPreset);
@@ -954,6 +1072,8 @@ function aplicarAutoDeteccion(cabeceras) {
     }
   }
 
+  pintarValoresTipo();
+  pintarAvisoCantidadNegativa();
   actualizarEstadoMapeo();
   actualizarResumenMapeoTexto();
   actualizarAvisoComisionDivisa();
@@ -998,6 +1118,11 @@ function pintarTablaMapeo(cabeceras) {
     select.addEventListener("change", () => {
       nombrePresetActivo = null;   // tocar cualquier columna a mano desasocia el preset
       el("select-preset").value = "";
+      // Cambiar la columna de tipo o de cantidad invalida lo que ya se
+      // sabía de la columna anterior (los valores distintos, o si había
+      // negativos, son de otra columna ahora): se recalcula de cero.
+      if (campo === "tipo") { mapeoValoresTipo = {}; pintarValoresTipo(); }
+      if (campo === "cantidad") { respuestaCantidadNegativa = null; pintarAvisoCantidadNegativa(); }
       actualizarEstadoMapeo();
       actualizarResumenMapeoTexto();
       actualizarAvisoComisionDivisa();
@@ -1032,6 +1157,83 @@ function pintarTablaMuestra(cabeceras, filas) {
   });
 }
 
+// Solo tiene sentido preguntar una vez elegida la columna de tipo, y solo
+// si ese fichero de verdad trae valores para ella. Los valores nuevos se
+// autoclasifican (compra/venta/dividendo/ignorar por sinónimo); los que ya
+// tenían una respuesta (recordada, de preset, o puesta a mano) la
+// conservan — cambiar de fichero con las mismas cabeceras no debería
+// obligar a repetir el trabajo.
+function pintarValoresTipo() {
+  const contenedor = el("valores-tipo");
+  const columnaTipo = el("mapeo-tipo").value;
+  if (!columnaTipo || ficherosActuales.length === 0) { ocultar(contenedor); return; }
+
+  const valores = valoresDistintosDeColumna(columnaTipo);
+  if (valores.length === 0) { ocultar(contenedor); return; }
+
+  const OPCIONES = [
+    ["", "— elige —"],
+    ["compra", "Compra"],
+    ["venta", "Venta"],
+    ["dividendo", "Dividendo"],
+    ["ignorar", "Ignorar"],
+  ];
+
+  const cuerpo = el("tabla-valores-tipo").querySelector("tbody");
+  cuerpo.innerHTML = "";
+
+  for (const valor of valores) {
+    if (!(valor in mapeoValoresTipo)) {
+      mapeoValoresTipo[valor] = autoclasificarValorTipo(valor);
+    }
+
+    const fila = document.createElement("tr");
+    const celdaValor = document.createElement("td");
+    celdaValor.textContent = valor;
+    fila.appendChild(celdaValor);
+
+    const celdaSelect = document.createElement("td");
+    const select = document.createElement("select");
+    for (const [valorOpcion, etiqueta] of OPCIONES) {
+      const opcion = document.createElement("option");
+      opcion.value = valorOpcion;
+      opcion.textContent = etiqueta;
+      select.appendChild(opcion);
+    }
+    select.value = mapeoValoresTipo[valor] || "";
+    select.addEventListener("change", () => {
+      mapeoValoresTipo[valor] = select.value;
+      actualizarEstadoMapeo();
+      actualizarResumenMapeoTexto();
+    });
+    celdaSelect.appendChild(select);
+    fila.appendChild(celdaSelect);
+    cuerpo.appendChild(fila);
+  }
+
+  mostrar(contenedor);
+}
+
+function hayQuePreguntarCantidadNegativa() {
+  const columna = el("mapeo-cantidad").value;
+  if (!columna || ficherosActuales.length === 0) return false;
+  return hayCantidadesNegativas(columna);
+}
+
+// A diferencia del aviso de "comisión en otra divisa" (que solo informa),
+// este SÍ bloquea Calcular mientras no se responda: un signo negativo mal
+// interpretado cambia el resultado, así que no se asume nada por defecto.
+function pintarAvisoCantidadNegativa() {
+  const contenedor = el("aviso-cantidad-negativa");
+  if (!hayQuePreguntarCantidadNegativa()) { ocultar(contenedor); return; }
+
+  el("aviso-cantidad-negativa-texto").textContent =
+    'Hemos detectado cantidades negativas en la columna de cantidad (p. ej. "-10"). ¿Significa que esa fila es una venta?';
+  contenedor.querySelector('[data-respuesta="si"]').classList.toggle("activo", respuestaCantidadNegativa === true);
+  contenedor.querySelector('[data-respuesta="no"]').classList.toggle("activo", respuestaCantidadNegativa === false);
+  mostrar(contenedor);
+}
+
 function obtenerPresets() {
   const listaPy = lectorCsv.listar_presets();
   const nombres = listaPy.toJs();
@@ -1039,9 +1241,9 @@ function obtenerPresets() {
 
   return nombres.map((nombre) => {
     const parPy = lectorCsv.cargar_preset(nombre);
-    const [mapeo, , comisionEnDivisaOperacion] = parPy.toJs({ dict_converter: Object.fromEntries });
+    const [mapeo, tipos, comisionEnDivisaOperacion, cantidadValorAbsoluto] = parPy.toJs({ dict_converter: Object.fromEntries });
     parPy.destroy();
-    return { nombre, mapeo, comisionEnDivisaOperacion: !!comisionEnDivisaOperacion };
+    return { nombre, mapeo, tipos, comisionEnDivisaOperacion: !!comisionEnDivisaOperacion, cantidadValorAbsoluto: !!cantidadValorAbsoluto };
   });
 }
 
@@ -1069,8 +1271,9 @@ function obtenerComisionEnDivisaOperacion() {
 // opciones del desplegable.
 function actualizarAvisoComisionDivisa() {
   const aviso = el("aviso-comision-divisa");
+  if (!motorListo || ficherosActuales.length === 0) { ocultar(aviso); return; }
   const valores = valoresDelFormulario();
-  if (!motorListo || !valores.comision || ficherosActuales.length === 0) { ocultar(aviso); return; }
+  if (!valores.comision) { ocultar(aviso); return; }
 
   const mapeoPy = pyodide.toPy(new Map(Object.entries(valores)));
   let hayRiesgo = false;
@@ -1114,7 +1317,11 @@ function pintarSelectorPresets() {
     const preset = obtenerPresets().find((p) => p.nombre === select.value);
     if (preset) {
       aplicarMapeoAlFormulario(preset.mapeo, preset.comisionEnDivisaOperacion);
+      mapeoValoresTipo = tiposCategoriaAValores(preset.tipos);
+      respuestaCantidadNegativa = preset.cantidadValorAbsoluto;
       nombrePresetActivo = preset.nombre;
+      pintarValoresTipo();
+      pintarAvisoCantidadNegativa();
       actualizarEstadoMapeo();
       actualizarResumenMapeoTexto();
       actualizarAvisoComisionDivisa();
@@ -1198,6 +1405,26 @@ function actualizarEstadoMapeo() {
     return;
   }
 
+  // Igual que con las columnas: mientras falte decir qué es un valor de la
+  // columna de tipo, o responder si las cantidades negativas son ventas,
+  // no se calcula — nunca se asume nada que cambiaría el resultado.
+  const valoresTipoSinClasificar = valores.tipo
+    ? valoresDistintosDeColumna(valores.tipo).filter((v) => !mapeoValoresTipo[v])
+    : [];
+  if (valoresTipoSinClasificar.length > 0) {
+    avisoEl.textContent = `Indica qué significa cada valor de "Tipo de operación" que trae tu fichero: ${valoresTipoSinClasificar.map((v) => `"${v}"`).join(", ")}.`;
+    mostrar(avisoEl);
+    el("boton-calcular").disabled = true;
+    return;
+  }
+
+  if (hayQuePreguntarCantidadNegativa() && respuestaCantidadNegativa === null) {
+    avisoEl.textContent = "Responde si las cantidades negativas de tu fichero significan una venta (arriba) antes de calcular.";
+    mostrar(avisoEl);
+    el("boton-calcular").disabled = true;
+    return;
+  }
+
   ocultar(avisoEl);
   el("boton-calcular").disabled = false;
 }
@@ -1250,7 +1477,9 @@ function configurarBotones() {
       lectorCsv.guardar_preset.callKwargs({
         nombre,
         mapeo: pyodide.toPy(new Map(Object.entries(mapeo))),
+        tipos: pyodide.toPy(new Map(Object.entries(tiposValoresACategoria(mapeoValoresTipo)))),
         comision_en_divisa_operacion: obtenerComisionEnDivisaOperacion(),
+        cantidad_valor_absoluto: respuestaCantidadNegativa === true,
       });
     } catch (error) {
       mostrarError(`No se ha podido guardar el preset: ${mensajeDeErrorPython(error)}`);
@@ -1263,6 +1492,15 @@ function configurarBotones() {
     pintarSelectorPresets();
     el("select-preset").value = nombre;
     actualizarPresetActivo();
+  });
+
+  el("aviso-cantidad-negativa").querySelectorAll("[data-respuesta]").forEach((boton) => {
+    boton.addEventListener("click", () => {
+      respuestaCantidadNegativa = boton.dataset.respuesta === "si";
+      pintarAvisoCantidadNegativa();
+      actualizarEstadoMapeo();
+      actualizarResumenMapeoTexto();
+    });
   });
 
   el("boton-descargar").addEventListener("click", descargarDesgloseCSV);
@@ -1296,12 +1534,16 @@ function calcularConMotor(mapeo, comisionEnDivisaOperacion) {
   try {
     const ficherosPy = pyodide.toPy(ficherosActuales.map((f) => [f.nombre, f.texto]));
     const mapeoPy = pyodide.toPy(new Map(Object.entries(mapeo)));
+    const tiposPy = pyodide.toPy(new Map(Object.entries(tiposValoresACategoria(mapeoValoresTipo))));
     const resultadoPy = procesarCsvsMulti.callKwargs({
-      ficheros: ficherosPy, mapeo: mapeoPy, comision_en_divisa_operacion: comisionEnDivisaOperacion,
+      ficheros: ficherosPy, mapeo: mapeoPy, tipos: tiposPy,
+      comision_en_divisa_operacion: comisionEnDivisaOperacion,
+      cantidad_valor_absoluto: respuestaCantidadNegativa === true,
     });
     resultado = resultadoPy.toJs({ dict_converter: Object.fromEntries });
     resultadoPy.destroy();
     mapeoPy.destroy();
+    tiposPy.destroy();
     ficherosPy.destroy();
   } catch (error) {
     mostrarError(`No se ha podido calcular: ${mensajeDeErrorPython(error)}`);
@@ -1319,7 +1561,7 @@ function calcularConMotor(mapeo, comisionEnDivisaOperacion) {
   // El mapeo ha funcionado (aunque algún valor concreto falle después por
   // otro motivo, p.ej. tipo de cambio no disponible): lo recordamos para
   // no obligar a repetirlo si se sube otro fichero con estas cabeceras.
-  recordarMapeoLocal(cabecerasActuales, mapeo, comisionEnDivisaOperacion);
+  recordarMapeoLocal(cabecerasActuales, mapeo, comisionEnDivisaOperacion, mapeoValoresTipo, respuestaCantidadNegativa);
 
   // El FIFO ya se ha calculado UNA sola vez (dentro de procesarCsvsMulti,
   // arriba) sobre todo el histórico del fichero. A partir de aquí solo se

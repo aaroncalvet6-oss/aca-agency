@@ -24,6 +24,7 @@ RUTA_EJEMPLO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ejemplo
 RUTA_EJEMPLO_PERDIDA = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "ejemplos", "extracto_generico_perdida_dos_meses.csv"
 )
+RUTA_BROKER_SUCIO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pruebas", "prueba_7_broker_sucio.csv")
 
 MAPEO_EJEMPLO = {
     "fecha": "Fecha",
@@ -115,6 +116,83 @@ class TestFormatosDeFecha(unittest.TestCase):
 
         fechas = [op["fecha"] for op in operaciones_por_valor["XX0000000000"]]
         self.assertEqual(fechas, ["05/01/2024", "10/02/2024"])
+
+    def test_fecha_aaaa_mes_dia_con_barras(self):
+        ruta = _csv_temporal(
+            "Fecha,Tipo,ISIN,Cantidad,Precio,Moneda,Comision\n"
+            "2024/01/05,Compra,XX0000000000,10,80,EUR,1\n"
+        )
+        operaciones_por_valor, _, avisos = leer_operaciones(ruta, MAPEO_EJEMPLO)
+
+        self.assertEqual(avisos, [])
+        self.assertEqual(operaciones_por_valor["XX0000000000"][0]["fecha"], "05/01/2024")
+
+    def test_fecha_dd_guion_mm_guion_aaaa(self):
+        ruta = _csv_temporal(
+            "Fecha,Tipo,ISIN,Cantidad,Precio,Moneda,Comision\n"
+            "05-01-2024,Compra,XX0000000000,10,80,EUR,1\n"
+        )
+        operaciones_por_valor, _, avisos = leer_operaciones(ruta, MAPEO_EJEMPLO)
+
+        self.assertEqual(avisos, [])
+        self.assertEqual(operaciones_por_valor["XX0000000000"][0]["fecha"], "05/01/2024")
+
+    def test_fecha_iso_con_hora_y_z_se_queda_solo_con_el_dia(self):
+        ruta = _csv_temporal(
+            "Fecha,Tipo,ISIN,Cantidad,Precio,Moneda,Comision\n"
+            "2024-01-15T09:31:22Z,Compra,XX0000000000,10,80,EUR,1\n"
+        )
+        operaciones_por_valor, _, avisos = leer_operaciones(ruta, MAPEO_EJEMPLO)
+
+        self.assertEqual(avisos, [])
+        self.assertEqual(operaciones_por_valor["XX0000000000"][0]["fecha"], "15/01/2024")
+
+    def test_fecha_iso_con_hora_y_desplazamiento_horario_se_queda_solo_con_el_dia(self):
+        ruta = _csv_temporal(
+            "Fecha,Tipo,ISIN,Cantidad,Precio,Moneda,Comision\n"
+            "2024-01-15T23:31:22+02:00,Compra,XX0000000000,10,80,EUR,1\n"
+        )
+        operaciones_por_valor, _, avisos = leer_operaciones(ruta, MAPEO_EJEMPLO)
+
+        self.assertEqual(avisos, [])
+        self.assertEqual(operaciones_por_valor["XX0000000000"][0]["fecha"], "15/01/2024")
+
+    def test_fecha_con_espacio_y_hora_se_queda_solo_con_el_dia(self):
+        ruta = _csv_temporal(
+            "Fecha,Tipo,ISIN,Cantidad,Precio,Moneda,Comision\n"
+            "2024-01-15 09:31:22,Compra,XX0000000000,10,80,EUR,1\n"
+        )
+        operaciones_por_valor, _, avisos = leer_operaciones(ruta, MAPEO_EJEMPLO)
+
+        self.assertEqual(avisos, [])
+        self.assertEqual(operaciones_por_valor["XX0000000000"][0]["fecha"], "15/01/2024")
+
+
+class TestCantidadValorAbsoluto(unittest.TestCase):
+    """Algunos brokers exportan las ventas con la cantidad en negativo. El
+    signo nunca decide compra/venta (eso lo dice solo la columna 'tipo' y
+    su mapeo de valores) — cantidad_valor_absoluto solo normaliza el
+    numero, y solo cuando el usuario ha confirmado que asi es como exporta
+    su broker."""
+
+    CONTENIDO = (
+        "Fecha;Tipo;ISIN;Cantidad;Precio;Moneda;Comision\n"
+        "05/01/2024;Compra;XX0000000000;10;100;EUR;1\n"
+        "10/02/2024;Venta;XX0000000000;-4;110;EUR;1\n"
+    )
+
+    def test_por_defecto_la_cantidad_negativa_se_deja_tal_cual(self):
+        operaciones_por_valor, _, _ = leer_operaciones(contenido=self.CONTENIDO, mapeo=MAPEO_EJEMPLO)
+
+        self.assertEqual(operaciones_por_valor["XX0000000000"][1]["acciones"], "-4")
+
+    def test_con_la_opcion_activada_la_cantidad_negativa_se_pasa_a_positivo(self):
+        operaciones_por_valor, _, _ = leer_operaciones(
+            contenido=self.CONTENIDO, mapeo=MAPEO_EJEMPLO, cantidad_valor_absoluto=True
+        )
+
+        self.assertEqual(operaciones_por_valor["XX0000000000"][0]["acciones"], "10")   # positiva: no cambia
+        self.assertEqual(operaciones_por_valor["XX0000000000"][1]["acciones"], "4")    # negativa: pasa a positivo
 
 
 class TestDecimales(unittest.TestCase):
@@ -247,23 +325,44 @@ class TestPresets(unittest.TestCase):
     def test_guardar_y_cargar_preset(self):
         guardar_preset("mi_broker", MAPEO_EJEMPLO, ruta_presets=self.ruta_presets)
 
-        mapeo_cargado, tipos_cargados, comision_en_divisa = cargar_preset(
+        mapeo_cargado, tipos_cargados, comision_en_divisa, cantidad_valor_absoluto = cargar_preset(
             "mi_broker", ruta_presets=self.ruta_presets
         )
 
         self.assertEqual(mapeo_cargado, MAPEO_EJEMPLO)
         self.assertIn("compra", tipos_cargados)
         self.assertFalse(comision_en_divisa)   # por defecto, comision en EUR
+        self.assertFalse(cantidad_valor_absoluto)   # por defecto, cantidad tal cual
         self.assertIn("mi_broker", listar_presets(ruta_presets=self.ruta_presets))
+
+    def test_guardar_preset_recuerda_el_mapeo_de_valores_de_tipo(self):
+        # El mapeo de valores de tipo (p.ej. "Buy" -> compra) se guarda en
+        # el preset igual que el mapeo de columnas, para no tener que
+        # repetirlo cada vez que llega un extracto del mismo broker.
+        tipos_broker = {"compra": ["Buy"], "venta": ["Sell"], "dividendo": ["Dividend"], "ignorar": ["Fee"]}
+        guardar_preset("broker_ingles", MAPEO_EJEMPLO, tipos=tipos_broker, ruta_presets=self.ruta_presets)
+
+        _, tipos_cargados, _, _ = cargar_preset("broker_ingles", ruta_presets=self.ruta_presets)
+
+        self.assertEqual(tipos_cargados, tipos_broker)
 
     def test_guardar_preset_recuerda_la_divisa_de_la_comision(self):
         guardar_preset(
             "mi_broker", MAPEO_EJEMPLO, comision_en_divisa_operacion=True, ruta_presets=self.ruta_presets
         )
 
-        _, _, comision_en_divisa = cargar_preset("mi_broker", ruta_presets=self.ruta_presets)
+        _, _, comision_en_divisa, _ = cargar_preset("mi_broker", ruta_presets=self.ruta_presets)
 
         self.assertTrue(comision_en_divisa)
+
+    def test_guardar_preset_recuerda_si_la_cantidad_va_en_valor_absoluto(self):
+        guardar_preset(
+            "broker_con_signo", MAPEO_EJEMPLO, cantidad_valor_absoluto=True, ruta_presets=self.ruta_presets
+        )
+
+        _, _, _, cantidad_valor_absoluto = cargar_preset("broker_con_signo", ruta_presets=self.ruta_presets)
+
+        self.assertTrue(cantidad_valor_absoluto)
 
     def test_cargar_preset_inexistente_da_error_claro(self):
         with self.assertRaises(ErrorLectorCSV):
@@ -399,6 +498,96 @@ class TestExtractoDeEjemploPerdidaDosMeses(unittest.TestCase):
         self.assertEqual(lote["fecha"], "20/07/2025")
         coste_total = (lote["coste_accion"] * lote["acciones"]).quantize(Decimal("0.01"))
         self.assertEqual(coste_total, Decimal("314.20"))
+
+
+class TestFicheroBrokerSucio(unittest.TestCase):
+    """pruebas/prueba_7_broker_sucio.csv: extracto "real" con fechas ISO
+    con hora, tipos en aleman (Kauf/Verkauf/Dividende — a proposito NO en
+    la lista de sinonimos por defecto, a diferencia de "buy"/"sell"/
+    "dividend" que TIPOS_POR_DEFECTO ya reconoce), cantidades de venta en
+    negativo, y filas que no son compraventas (interes, comision suelta,
+    Saveback, redondeo, una venta cancelada) mezcladas con los datos
+    validos. Hace falta el mapeo de valores de tipo que construye la web
+    (ver aplicarAutoDeteccion/mapeoValoresTipo en app.js) y pasarlo aqui
+    como 'tipos', igual que haria procesar_csvs_multi."""
+
+    TIPOS_BROKER = {
+        "compra": ["Kauf"],
+        "venta": ["Verkauf"],
+        "dividendo": ["Dividende"],
+        "ignorar": ["Interest", "Fee", "Saveback", "Round up", "Cancelled"],
+    }
+    MAPEO_BROKER = {
+        "fecha": "Date", "tipo": "Type", "valor": "ISIN",
+        "cantidad": "Quantity", "precio": "Price",
+        "divisa": "Currency", "comision": "Fee",
+    }
+
+    def test_sin_mapear_los_valores_de_tipo_no_se_reconoce_ninguna_fila(self):
+        # Antes de que el usuario diga que "Buy"/"Sell"/"Dividend" son
+        # compra/venta/dividendo, TIPOS_POR_DEFECTO (en espanol) no
+        # reconoce nada: las 11 filas se ignoran, ninguna se inventa.
+        operaciones_por_valor, dividendos_por_valor, avisos = leer_operaciones(
+            RUTA_BROKER_SUCIO, self.MAPEO_BROKER
+        )
+
+        self.assertEqual(operaciones_por_valor, {})
+        self.assertEqual(dividendos_por_valor, {})
+        self.assertEqual(len(avisos), 11)
+
+    def test_tras_mapear_los_valores_da_un_resultado(self):
+        operaciones_por_valor, dividendos_por_valor, avisos = leer_operaciones(
+            RUTA_BROKER_SUCIO, self.MAPEO_BROKER, tipos=self.TIPOS_BROKER, cantidad_valor_absoluto=True
+        )
+
+        operaciones = operaciones_por_valor["DE0007100000"]
+        self.assertEqual(len(operaciones), 5)   # 3 compras + 2 ventas; las otras 6 filas, aparte
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            ganancia, lotes_finales = calcular_detalle(operaciones)
+
+        self.assertEqual(f"{ganancia:.2f}", "126.60")
+        self.assertEqual(len(lotes_finales), 2)
+
+        dividendos = dividendos_por_valor["DE0007100000"]
+        self.assertEqual(len(dividendos), 1)
+        self.assertEqual(dividendos[0]["bruto"], Decimal("8.00"))
+
+    def test_las_cantidades_negativas_de_venta_llegan_en_positivo(self):
+        operaciones_por_valor, _, _ = leer_operaciones(
+            RUTA_BROKER_SUCIO, self.MAPEO_BROKER, tipos=self.TIPOS_BROKER, cantidad_valor_absoluto=True
+        )
+
+        ventas = [op for op in operaciones_por_valor["DE0007100000"] if op["tipo"] == "venta"]
+        self.assertEqual(len(ventas), 2)
+        for venta in ventas:
+            self.assertFalse(venta["acciones"].startswith("-"))
+        self.assertEqual([v["acciones"] for v in ventas], ["8", "4"])
+
+    def test_intereses_comision_suelta_saveback_redondeo_y_cancelada_no_cuentan(self):
+        operaciones_por_valor, dividendos_por_valor, avisos = leer_operaciones(
+            RUTA_BROKER_SUCIO, self.MAPEO_BROKER, tipos=self.TIPOS_BROKER, cantidad_valor_absoluto=True
+        )
+
+        # Ni una sola de estas 5 palabras genera una operacion o un dividendo:
+        # todas quedan fuera de operaciones_por_valor/dividendos_por_valor,
+        # cada una con su propio aviso explicando la fila.
+        self.assertEqual(len(avisos), 5)
+        aviso_conjunto = " | ".join(avisos)
+        for palabra in ("Interest", "Fee", "Saveback", "Round up", "Cancelled"):
+            self.assertIn(palabra, aviso_conjunto)
+
+        n_total_filas_reconocidas = len(operaciones_por_valor["DE0007100000"]) + len(dividendos_por_valor["DE0007100000"])
+        self.assertEqual(n_total_filas_reconocidas, 6)   # 5 operaciones + 1 dividendo = 11 filas - 5 ignoradas
+
+    def test_las_fechas_iso_con_hora_del_fichero_se_leen_bien(self):
+        operaciones_por_valor, _, avisos = leer_operaciones(
+            RUTA_BROKER_SUCIO, self.MAPEO_BROKER, tipos=self.TIPOS_BROKER, cantidad_valor_absoluto=True
+        )
+
+        self.assertEqual(avisos and len(avisos), 5)   # ninguna fecha mal formada añade un aviso de mas
+        primera_compra = operaciones_por_valor["DE0007100000"][0]
+        self.assertEqual(primera_compra["fecha"], "15/01/2024")   # de "2024-01-15T09:31:22Z"
 
 
 class TestNoPermiteReutilizarColumna(unittest.TestCase):

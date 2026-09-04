@@ -114,6 +114,22 @@
           <tbody></tbody>
         </table>
 
+        <div id="valores-tipo" class="oculto">
+          <p class="lbl">Qué significa cada valor de "Tipo de operación"</p>
+          <table id="tabla-valores-tipo" class="tabla-mapeo">
+            <thead><tr><th scope="col">Valor en tu fichero</th><th scope="col">Significa</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+
+        <div id="aviso-cantidad-negativa" class="notice notice-info oculto">
+          <p id="aviso-cantidad-negativa-texto"></p>
+          <div class="fila-preset">
+            <button type="button" class="boton-secundario" data-respuesta="si">Sí, son ventas: usar valor absoluto</button>
+            <button type="button" class="boton-secundario" data-respuesta="no">No, dejarlo tal cual</button>
+          </div>
+        </div>
+
         <div class="fila-preset">
           <label for="select-comision-divisa">La comisión está expresada en</label>
           <select id="select-comision-divisa">
